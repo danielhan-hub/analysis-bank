@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+
+# Candidate submissions (local-only until accepted)
+candidates/*/
+!candidates/.gitkeep
+
+# macOS
+.DS_Store
