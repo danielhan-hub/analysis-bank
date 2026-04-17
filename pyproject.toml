@@ -1,0 +1,26 @@
+[project]
+name = "analysis_bank"
+version = "0.1.0"
+description = "Reusable stored procedure library for Ads MS analysis"
+requires-python = ">=3.10"
+dependencies = [
+    "claude-agent-sdk>=0.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+]
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["analysis_bank"]
+
+[tool.setuptools.package-data]
+"analysis_bank" = [
+    "prompts/**/*.md",
+]
