@@ -8,6 +8,8 @@ and accepts or rejects them.
 from __future__ import annotations
 
 import logging
+import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -164,3 +166,75 @@ class AnalysisBankReceiver:
         """Print a verdict to the terminal."""
         symbol = {"ACCEPT": "+", "REJECT": "x", "REVISE": "~"}.get(verdict.verdict, "?")
         print(f"  [{symbol}] {verdict.candidate}: {verdict.verdict} — {verdict.reason}")
+
+    # ------------------------------------------------------------------
+    # Apply
+    # ------------------------------------------------------------------
+
+    def apply(self, candidate_name: str) -> Path:
+        """Merge a candidate into the live library.
+
+        Run this after reviewing the verdict from ``evaluate()``. Applies
+        the changes wholesale and removes the candidate folder.
+
+        Steps:
+          1. Wholesale replace INDEX.md with the candidate's INDEX_PROPOSED.md
+          2. Copy the {NN}_{name}/ procedure folder into procedures/,
+             overwriting any existing folder of the same name (expansion case)
+          3. Delete the candidate folder
+
+        If INDEX_BASELINE.md is present and differs from the live INDEX.md,
+        emit a warning — the wholesale replace will silently overwrite any
+        edits made to INDEX.md after this candidate was generated. The apply
+        proceeds anyway; review ``git diff INDEX.md`` before committing.
+
+        Args:
+            candidate_name: The candidate folder name, e.g.
+                "new_analysis_candidate_3". Resolved against CANDIDATES_DIR.
+
+        Returns:
+            The path of the newly installed procedure folder.
+        """
+        candidate_dir = CANDIDATES_DIR / candidate_name
+        if not candidate_dir.is_dir():
+            raise FileNotFoundError(f"Candidate folder not found: {candidate_dir}")
+
+        proposed = candidate_dir / "INDEX_PROPOSED.md"
+        if not proposed.exists():
+            raise FileNotFoundError(f"Missing required file: {proposed}")
+
+        proc_subdirs = [
+            d for d in candidate_dir.iterdir()
+            if d.is_dir() and re.match(r"\d+_", d.name)
+        ]
+        if len(proc_subdirs) != 1:
+            raise RuntimeError(
+                f"Expected exactly one {{NN}}_{{name}}/ procedure subfolder in "
+                f"{candidate_dir}, found {len(proc_subdirs)}: {[d.name for d in proc_subdirs]}"
+            )
+        proc_src = proc_subdirs[0]
+
+        baseline = candidate_dir / "INDEX_BASELINE.md"
+        if baseline.exists() and INDEX_PATH.exists():
+            if baseline.read_text(encoding="utf-8") != INDEX_PATH.read_text(encoding="utf-8"):
+                logger.warning(
+                    "INDEX.md has drifted since this candidate was generated. "
+                    "Wholesale replace will overwrite intervening changes. "
+                    "Review `git diff INDEX.md` before committing."
+                )
+
+        INDEX_PATH.write_text(proposed.read_text(encoding="utf-8"), encoding="utf-8")
+        logger.info("Replaced INDEX.md from %s", proposed)
+
+        proc_dst = PROCEDURES_DIR / proc_src.name
+        if proc_dst.exists():
+            shutil.rmtree(proc_dst)
+            logger.info("Removed existing %s (overwrite)", proc_dst)
+        shutil.copytree(proc_src, proc_dst)
+        logger.info("Installed procedure to %s", proc_dst)
+
+        shutil.rmtree(candidate_dir)
+        logger.info("Removed candidate folder %s", candidate_dir)
+
+        print(f"Applied {candidate_name} -> {proc_dst}")
+        return proc_dst
