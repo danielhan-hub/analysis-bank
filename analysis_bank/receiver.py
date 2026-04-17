@@ -8,6 +8,8 @@ and accepts or rejects them.
 from __future__ import annotations
 
 import logging
+import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -83,6 +85,7 @@ class AnalysisBankReceiver:
         """Run Opus agent to critically evaluate one candidate."""
         from claude_agent_sdk import AgentDefinition, AgentRunner
 
+        self._require_candidate_files(candidate_dir)
         prompt = self._build_prompt(candidate_dir)
 
         agent_def = AgentDefinition(
@@ -106,18 +109,27 @@ class AnalysisBankReceiver:
         """Build the evaluation prompt for a single candidate."""
         return (
             f"Evaluate the candidate procedure submission in this folder.\n\n"
-            f"## Current Library\n"
-            f"- INDEX.md: {INDEX_PATH}\n"
+            f"## Three INDEX Files (all required for proper evaluation)\n"
+            f"- BASELINE — `{candidate_dir}/INDEX_BASELINE.md`: snapshot of the live INDEX.md "
+            f"taken at promote-time. NOT the broker's output — it's a frozen reference.\n"
+            f"- PROPOSED — `{candidate_dir}/INDEX_PROPOSED.md`: the broker's proposed INDEX.md "
+            f"(what they want the library to look like after this candidate is applied).\n"
+            f"- LIVE — `{INDEX_PATH}`: the current state of the library INDEX.md right now.\n\n"
+            f"## How to read the diffs\n"
+            f"- BASELINE → PROPOSED  =  exactly what THIS broker is proposing. Judge this.\n"
+            f"- BASELINE → LIVE      =  drift since promotion (e.g. another candidate was "
+            f"applied in the meantime). Be aware of it but don't penalize this broker for it.\n\n"
+            f"## Other Library Files\n"
             f"- Procedures directory: {PROCEDURES_DIR}\n\n"
-            f"## Candidate\n"
+            f"## Candidate Procedure Files\n"
             f"- Candidate folder: {candidate_dir}\n"
-            f"- Look for: INDEX_PROPOSED.md, a subfolder with README.md and procedure.sql\n\n"
+            f"- Look for: a {{NN}}_{{name}}/ subfolder with README.md and procedure.sql\n\n"
             f"## Your Task\n"
-            f"1. Read the current INDEX.md to understand what already exists\n"
-            f"2. Read the candidate's INDEX_PROPOSED.md to see what changes are proposed\n"
+            f"1. Read BASELINE and PROPOSED; compute the diff — that is the actual proposal\n"
+            f"2. Read LIVE INDEX.md to be aware of any drift (BASELINE → LIVE)\n"
             f"3. Read the candidate's README.md and procedure.sql\n"
             f"4. If this proposes modifying an existing procedure, read that procedure too\n"
-            f"5. Critically evaluate:\n"
+            f"5. Critically evaluate the proposal (BASELINE → PROPOSED diff):\n"
             f"   - Is this genuinely distinct from existing procedures?\n"
             f"   - Is the SQL well-parameterized and generalizable?\n"
             f"   - Does the README follow the library's conventions?\n"
@@ -128,6 +140,18 @@ class AnalysisBankReceiver:
             f"   VERDICT: REJECT — [reason]\n"
             f"   VERDICT: REVISE — [specific feedback on what to change]\n"
         )
+
+    @staticmethod
+    def _require_candidate_files(candidate_dir: Path) -> None:
+        """Fail fast if any required candidate file is missing."""
+        required = ["INDEX_BASELINE.md", "INDEX_PROPOSED.md"]
+        missing = [name for name in required if not (candidate_dir / name).exists()]
+        if missing:
+            raise FileNotFoundError(
+                f"Candidate {candidate_dir.name} is missing required file(s): "
+                f"{', '.join(missing)}. Every candidate produced by promote_code() must "
+                f"include both INDEX_BASELINE.md and INDEX_PROPOSED.md."
+            )
 
     def _load_agent_prompt(self) -> str:
         """Load the receiver agent system prompt."""
@@ -164,3 +188,76 @@ class AnalysisBankReceiver:
         """Print a verdict to the terminal."""
         symbol = {"ACCEPT": "+", "REJECT": "x", "REVISE": "~"}.get(verdict.verdict, "?")
         print(f"  [{symbol}] {verdict.candidate}: {verdict.verdict} — {verdict.reason}")
+
+    # ------------------------------------------------------------------
+    # Apply
+    # ------------------------------------------------------------------
+
+    def apply(self, candidate_name: str) -> Path:
+        """Merge a candidate into the live library.
+
+        Run this after reviewing the verdict from ``evaluate()``. Applies
+        the changes wholesale and removes the candidate folder.
+
+        Steps:
+          1. Wholesale replace INDEX.md with the candidate's INDEX_PROPOSED.md
+          2. Copy the {NN}_{name}/ procedure folder into procedures/,
+             overwriting any existing folder of the same name (expansion case)
+          3. Delete the candidate folder
+
+        Both INDEX_BASELINE.md and INDEX_PROPOSED.md are required — every
+        candidate produced by promote_code() must include them. If BASELINE
+        differs from the live INDEX.md, emit a warning and proceed: the
+        wholesale replace will silently overwrite any edits made to INDEX.md
+        after this candidate was generated. Review ``git diff INDEX.md``
+        before committing.
+
+        Args:
+            candidate_name: The candidate folder name, e.g.
+                "new_analysis_candidate_3". Resolved against CANDIDATES_DIR.
+
+        Returns:
+            The path of the newly installed procedure folder.
+        """
+        candidate_dir = CANDIDATES_DIR / candidate_name
+        if not candidate_dir.is_dir():
+            raise FileNotFoundError(f"Candidate folder not found: {candidate_dir}")
+
+        self._require_candidate_files(candidate_dir)
+        proposed = candidate_dir / "INDEX_PROPOSED.md"
+        baseline = candidate_dir / "INDEX_BASELINE.md"
+
+        proc_subdirs = [
+            d for d in candidate_dir.iterdir()
+            if d.is_dir() and re.match(r"\d+_", d.name)
+        ]
+        if len(proc_subdirs) != 1:
+            raise RuntimeError(
+                f"Expected exactly one {{NN}}_{{name}}/ procedure subfolder in "
+                f"{candidate_dir}, found {len(proc_subdirs)}: {[d.name for d in proc_subdirs]}"
+            )
+        proc_src = proc_subdirs[0]
+
+        if INDEX_PATH.exists():
+            if baseline.read_text(encoding="utf-8") != INDEX_PATH.read_text(encoding="utf-8"):
+                logger.warning(
+                    "INDEX.md has drifted since this candidate was generated. "
+                    "Wholesale replace will overwrite intervening changes. "
+                    "Review `git diff INDEX.md` before committing."
+                )
+
+        INDEX_PATH.write_text(proposed.read_text(encoding="utf-8"), encoding="utf-8")
+        logger.info("Replaced INDEX.md from %s", proposed)
+
+        proc_dst = PROCEDURES_DIR / proc_src.name
+        if proc_dst.exists():
+            shutil.rmtree(proc_dst)
+            logger.info("Removed existing %s (overwrite)", proc_dst)
+        shutil.copytree(proc_src, proc_dst)
+        logger.info("Installed procedure to %s", proc_dst)
+
+        shutil.rmtree(candidate_dir)
+        logger.info("Removed candidate folder %s", candidate_dir)
+
+        print(f"Applied {candidate_name} -> {proc_dst}")
+        return proc_dst

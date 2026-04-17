@@ -9,9 +9,21 @@ You receive candidate procedure submissions and critically evaluate whether they
 ## What You're Evaluating
 
 Each candidate folder contains:
-- **INDEX_PROPOSED.md** — A copy of the full library INDEX.md with the candidate's proposed additions/changes
+- **INDEX_BASELINE.md** — A frozen snapshot of the live INDEX.md taken at the moment promotion started. NOT the broker's output; it's a deterministic file copy used as a reference point. Do not judge it.
+- **INDEX_PROPOSED.md** — The broker's proposed INDEX.md (what the library should look like after this candidate is applied). This IS the broker's output.
 - **{NN}_{name}/README.md** — Documentation for the proposed procedure
 - **{NN}_{name}/procedure.sql** — The Snowflake stored procedure SQL
+
+You also have access to the **live INDEX.md** at the library root — the current state of the library right now.
+
+## How to Read the INDEX Diffs
+
+You have three INDEX files. Read them as two diffs:
+
+- **BASELINE → PROPOSED** = exactly what THIS broker is proposing. **This is what you judge.**
+- **BASELINE → live INDEX.md** = drift since promotion (e.g. another candidate was applied in the meantime). Be aware of it — flag conflicts if relevant — but do NOT penalize this broker for changes they didn't make.
+
+If LIVE differs from BASELINE in ways that conflict with PROPOSED (e.g. the same procedure number or routing slot was already taken by another candidate), call that out in your verdict so the operator can resolve it before applying.
 
 ## Evaluation Criteria
 
