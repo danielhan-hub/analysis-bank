@@ -85,6 +85,7 @@ class AnalysisBankReceiver:
         """Run Opus agent to critically evaluate one candidate."""
         from claude_agent_sdk import AgentDefinition, AgentRunner
 
+        self._require_candidate_files(candidate_dir)
         prompt = self._build_prompt(candidate_dir)
 
         agent_def = AgentDefinition(
@@ -108,18 +109,27 @@ class AnalysisBankReceiver:
         """Build the evaluation prompt for a single candidate."""
         return (
             f"Evaluate the candidate procedure submission in this folder.\n\n"
-            f"## Current Library\n"
-            f"- INDEX.md: {INDEX_PATH}\n"
+            f"## Three INDEX Files (all required for proper evaluation)\n"
+            f"- BASELINE — `{candidate_dir}/INDEX_BASELINE.md`: snapshot of the live INDEX.md "
+            f"taken at promote-time. NOT the broker's output — it's a frozen reference.\n"
+            f"- PROPOSED — `{candidate_dir}/INDEX_PROPOSED.md`: the broker's proposed INDEX.md "
+            f"(what they want the library to look like after this candidate is applied).\n"
+            f"- LIVE — `{INDEX_PATH}`: the current state of the library INDEX.md right now.\n\n"
+            f"## How to read the diffs\n"
+            f"- BASELINE → PROPOSED  =  exactly what THIS broker is proposing. Judge this.\n"
+            f"- BASELINE → LIVE      =  drift since promotion (e.g. another candidate was "
+            f"applied in the meantime). Be aware of it but don't penalize this broker for it.\n\n"
+            f"## Other Library Files\n"
             f"- Procedures directory: {PROCEDURES_DIR}\n\n"
-            f"## Candidate\n"
+            f"## Candidate Procedure Files\n"
             f"- Candidate folder: {candidate_dir}\n"
-            f"- Look for: INDEX_PROPOSED.md, a subfolder with README.md and procedure.sql\n\n"
+            f"- Look for: a {{NN}}_{{name}}/ subfolder with README.md and procedure.sql\n\n"
             f"## Your Task\n"
-            f"1. Read the current INDEX.md to understand what already exists\n"
-            f"2. Read the candidate's INDEX_PROPOSED.md to see what changes are proposed\n"
+            f"1. Read BASELINE and PROPOSED; compute the diff — that is the actual proposal\n"
+            f"2. Read LIVE INDEX.md to be aware of any drift (BASELINE → LIVE)\n"
             f"3. Read the candidate's README.md and procedure.sql\n"
             f"4. If this proposes modifying an existing procedure, read that procedure too\n"
-            f"5. Critically evaluate:\n"
+            f"5. Critically evaluate the proposal (BASELINE → PROPOSED diff):\n"
             f"   - Is this genuinely distinct from existing procedures?\n"
             f"   - Is the SQL well-parameterized and generalizable?\n"
             f"   - Does the README follow the library's conventions?\n"
@@ -130,6 +140,18 @@ class AnalysisBankReceiver:
             f"   VERDICT: REJECT — [reason]\n"
             f"   VERDICT: REVISE — [specific feedback on what to change]\n"
         )
+
+    @staticmethod
+    def _require_candidate_files(candidate_dir: Path) -> None:
+        """Fail fast if any required candidate file is missing."""
+        required = ["INDEX_BASELINE.md", "INDEX_PROPOSED.md"]
+        missing = [name for name in required if not (candidate_dir / name).exists()]
+        if missing:
+            raise FileNotFoundError(
+                f"Candidate {candidate_dir.name} is missing required file(s): "
+                f"{', '.join(missing)}. Every candidate produced by promote_code() must "
+                f"include both INDEX_BASELINE.md and INDEX_PROPOSED.md."
+            )
 
     def _load_agent_prompt(self) -> str:
         """Load the receiver agent system prompt."""
@@ -183,10 +205,12 @@ class AnalysisBankReceiver:
              overwriting any existing folder of the same name (expansion case)
           3. Delete the candidate folder
 
-        If INDEX_BASELINE.md is present and differs from the live INDEX.md,
-        emit a warning — the wholesale replace will silently overwrite any
-        edits made to INDEX.md after this candidate was generated. The apply
-        proceeds anyway; review ``git diff INDEX.md`` before committing.
+        Both INDEX_BASELINE.md and INDEX_PROPOSED.md are required — every
+        candidate produced by promote_code() must include them. If BASELINE
+        differs from the live INDEX.md, emit a warning and proceed: the
+        wholesale replace will silently overwrite any edits made to INDEX.md
+        after this candidate was generated. Review ``git diff INDEX.md``
+        before committing.
 
         Args:
             candidate_name: The candidate folder name, e.g.
@@ -199,9 +223,9 @@ class AnalysisBankReceiver:
         if not candidate_dir.is_dir():
             raise FileNotFoundError(f"Candidate folder not found: {candidate_dir}")
 
+        self._require_candidate_files(candidate_dir)
         proposed = candidate_dir / "INDEX_PROPOSED.md"
-        if not proposed.exists():
-            raise FileNotFoundError(f"Missing required file: {proposed}")
+        baseline = candidate_dir / "INDEX_BASELINE.md"
 
         proc_subdirs = [
             d for d in candidate_dir.iterdir()
@@ -214,8 +238,7 @@ class AnalysisBankReceiver:
             )
         proc_src = proc_subdirs[0]
 
-        baseline = candidate_dir / "INDEX_BASELINE.md"
-        if baseline.exists() and INDEX_PATH.exists():
+        if INDEX_PATH.exists():
             if baseline.read_text(encoding="utf-8") != INDEX_PATH.read_text(encoding="utf-8"):
                 logger.warning(
                     "INDEX.md has drifted since this candidate was generated. "
