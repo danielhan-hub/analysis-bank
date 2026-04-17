@@ -7,6 +7,7 @@ and accepts or rejects them.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import shutil
@@ -77,33 +78,55 @@ class AnalysisBankReceiver:
         accepted = [r for r in results if r.verdict == "ACCEPT"]
         if accepted:
             print(f"\n{len(accepted)} candidate(s) accepted.")
-            print("Run the receiver's apply step to merge into the library.")
+            print("Call receiver.apply(<candidate_name>) on each to merge into the library.")
 
         return results
 
     async def _evaluate_candidate(self, candidate_dir: Path) -> ReceiverVerdict:
         """Run Opus agent to critically evaluate one candidate."""
-        from claude_agent_sdk import AgentDefinition, AgentRunner
+        from claude_agent_sdk import ClaudeAgentOptions, query
 
         self._require_candidate_files(candidate_dir)
         prompt = self._build_prompt(candidate_dir)
 
-        agent_def = AgentDefinition(
-            model="claude-opus-4-6",
-            instructions=self._load_agent_prompt(),
-            tools=["Read", "Glob", "Grep"],
-        )
+        # Match AdsMSAnalyzer._invoke_agent: clear CLAUDECODE so the SDK doesn't
+        # detect a nested session and refuse to spawn.
+        sdk_env = {"CLAUDECODE": ""}
 
-        runner = AgentRunner(
-            agent=agent_def,
-            prompt=prompt,
-            cwd=str(candidate_dir),
-            timeout_seconds=self.timeout_seconds,
-            max_turns=self.max_agent_turns,
-        )
+        async def _drive_agent() -> str:
+            captured = ""
+            async for message in query(
+                prompt=prompt,
+                options=ClaudeAgentOptions(
+                    system_prompt=self._load_agent_prompt(),
+                    allowed_tools=["Read", "Glob", "Grep"],
+                    model="opus",
+                    cwd=str(candidate_dir),
+                    permission_mode="bypassPermissions",
+                    max_turns=self.max_agent_turns,
+                    env=sdk_env,
+                ),
+            ):
+                if hasattr(message, "result") and message.result:
+                    captured = message.result
+            return captured
 
-        result = await runner.run()
-        return self._parse_verdict(candidate_dir.name, result)
+        try:
+            result_text = await asyncio.wait_for(_drive_agent(), timeout=self.timeout_seconds)
+        except asyncio.TimeoutError as e:
+            raise RuntimeError(
+                f"Receiver agent timed out after {self.timeout_seconds}s "
+                f"evaluating {candidate_dir.name}"
+            ) from e
+        except Exception as e:
+            error_msg = f"Receiver agent failed for {candidate_dir.name}: {type(e).__name__}: {e}"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg) from e
+
+        if not result_text:
+            logger.warning("Receiver agent returned empty result for %s", candidate_dir.name)
+
+        return self._parse_verdict(candidate_dir.name, result_text)
 
     def _build_prompt(self, candidate_dir: Path) -> str:
         """Build the evaluation prompt for a single candidate."""
@@ -142,8 +165,12 @@ class AnalysisBankReceiver:
         )
 
     @staticmethod
-    def _require_candidate_files(candidate_dir: Path) -> None:
-        """Fail fast if any required candidate file is missing."""
+    def _require_candidate_files(candidate_dir: Path) -> Path:
+        """Fail fast if any required candidate file is missing.
+
+        Returns the {NN}_{name}/ procedure subfolder path so callers can use it
+        without re-globbing.
+        """
         required = ["INDEX_BASELINE.md", "INDEX_PROPOSED.md"]
         missing = [name for name in required if not (candidate_dir / name).exists()]
         if missing:
@@ -152,6 +179,27 @@ class AnalysisBankReceiver:
                 f"{', '.join(missing)}. Every candidate produced by promote_code() must "
                 f"include both INDEX_BASELINE.md and INDEX_PROPOSED.md."
             )
+
+        proc_subdirs = [
+            d for d in candidate_dir.iterdir()
+            if d.is_dir() and re.match(r"\d+_", d.name)
+        ]
+        if len(proc_subdirs) != 1:
+            raise RuntimeError(
+                f"Candidate {candidate_dir.name} must contain exactly one "
+                f"{{NN}}_{{name}}/ procedure subfolder, found {len(proc_subdirs)}: "
+                f"{[d.name for d in proc_subdirs]}"
+            )
+        proc_dir = proc_subdirs[0]
+        if not (proc_dir / "procedure.sql").exists():
+            raise FileNotFoundError(
+                f"Candidate {candidate_dir.name}: {proc_dir.name}/procedure.sql is missing."
+            )
+        if not (proc_dir / "README.md").exists():
+            raise FileNotFoundError(
+                f"Candidate {candidate_dir.name}: {proc_dir.name}/README.md is missing."
+            )
+        return proc_dir
 
     def _load_agent_prompt(self) -> str:
         """Load the receiver agent system prompt."""
@@ -223,20 +271,9 @@ class AnalysisBankReceiver:
         if not candidate_dir.is_dir():
             raise FileNotFoundError(f"Candidate folder not found: {candidate_dir}")
 
-        self._require_candidate_files(candidate_dir)
+        proc_src = self._require_candidate_files(candidate_dir)
         proposed = candidate_dir / "INDEX_PROPOSED.md"
         baseline = candidate_dir / "INDEX_BASELINE.md"
-
-        proc_subdirs = [
-            d for d in candidate_dir.iterdir()
-            if d.is_dir() and re.match(r"\d+_", d.name)
-        ]
-        if len(proc_subdirs) != 1:
-            raise RuntimeError(
-                f"Expected exactly one {{NN}}_{{name}}/ procedure subfolder in "
-                f"{candidate_dir}, found {len(proc_subdirs)}: {[d.name for d in proc_subdirs]}"
-            )
-        proc_src = proc_subdirs[0]
 
         if INDEX_PATH.exists():
             if baseline.read_text(encoding="utf-8") != INDEX_PATH.read_text(encoding="utf-8"):
@@ -249,6 +286,7 @@ class AnalysisBankReceiver:
         INDEX_PATH.write_text(proposed.read_text(encoding="utf-8"), encoding="utf-8")
         logger.info("Replaced INDEX.md from %s", proposed)
 
+        PROCEDURES_DIR.mkdir(parents=True, exist_ok=True)
         proc_dst = PROCEDURES_DIR / proc_src.name
         if proc_dst.exists():
             shutil.rmtree(proc_dst)
