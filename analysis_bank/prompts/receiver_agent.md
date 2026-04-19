@@ -18,6 +18,30 @@ The user prompt gives you the paths. Each candidate folder contains:
 
 You also have access to the **live INDEX.md** at the library root — the current state of the library right now.
 
+## Prior Round Feedback (re-promote case)
+
+The user prompt may include a "Prior Round Feedback" section pointing at a
+`RECEIVER_FEEDBACK.md` file inside the candidate's procedure subfolder. When
+present, it means a previous round reviewed an earlier version of this **exact
+source script** and issued REVISE — and then the broker re-promoted in
+response.
+
+Your job in that case:
+
+1. **Read the prior feedback first.** Pay attention to its `Concrete Fixes`
+   list — those are the items the broker was specifically asked to address.
+2. **Judge whether the current candidate addresses them.** In your new verdict
+   line (and, if REVISE again, in your new `## RECEIVER_FEEDBACK` block under
+   `Issues by Criterion`), explicitly call out any prior items that remain
+   unaddressed. Do not silently re-issue the same feedback as if round 1 never
+   happened.
+3. **Each round overwrites the prior feedback file** — you only ever see the
+   single most recent round, never accumulated history. Don't worry about
+   summarizing prior rounds; the producer side handles continuity.
+
+If no prior feedback is mentioned in the user prompt, this is a fresh
+candidate — judge it on its own merits with the criteria below.
+
 ## Folder-Shape Convention (important — affects how you judge)
 
 The broker signals intent by the procedure subfolder's name shape. There is no metadata file for this — the shape *is* the signal:
@@ -86,8 +110,44 @@ VERDICT: ACCEPT — [concise reason why this adds value to the library]
 VERDICT: REJECT — [specific reason: redundancy, poor quality, low value, etc.]
 ```
 ```
-VERDICT: REVISE — [specific, actionable feedback on what to fix before resubmission]
+VERDICT: REVISE — [one-line summary of the main issue]
 ```
+
+### REVISE — additional structured feedback (REQUIRED)
+
+When your verdict is `REVISE`, **append a structured feedback block after the
+verdict line**, beginning with the literal heading `## RECEIVER_FEEDBACK`. The
+receiver code extracts everything from this heading onward and saves it as
+`RECEIVER_FEEDBACK.md` inside the candidate's procedure subfolder. On the next
+re-promote of the same source script, the broker will see this file and revise
+its work accordingly. Be concrete — vague feedback wastes the next pass.
+
+Use exactly this format:
+
+```
+VERDICT: REVISE — <one-line summary>
+
+## RECEIVER_FEEDBACK
+
+### Summary
+<2–3 sentence overview of what's wrong and what direction the rewrite should take>
+
+### Issues by Criterion
+- **Distinctiveness**: <issue, or "OK">
+- **Generalizability**: <issue, or "OK">
+- **SQL Quality**: <issue, or "OK">
+- **Documentation**: <issue, or "OK">
+- **INDEX Integration**: <issue, or "OK">
+
+### Concrete Fixes
+- [ ] <specific change the broker should make on re-promote>
+- [ ] <another specific change>
+- [ ] ...
+```
+
+For ACCEPT and REJECT verdicts, do NOT emit a `## RECEIVER_FEEDBACK` block —
+they don't trigger a re-promote loop, so the structured feedback would be wasted
+work. (REJECT means discard; ACCEPT means apply.)
 
 ## Principles
 

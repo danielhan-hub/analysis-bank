@@ -64,6 +64,15 @@ class AnalysisBankReceiver:
 
         Saves the curator from manually moving folders in Finder.
 
+        **Resubmission semantics.** If the source candidate's ``_source.sql``
+        matches the ``_source.sql`` of any existing candidate in
+        ``candidates/``, those existing candidates are **removed** before the
+        copy, and the newest of their ``RECEIVER_FEEDBACK.md`` files (if any)
+        is **carried forward** into the new candidate's procedure subfolder.
+        This keeps the candidates inbox in a clean one-per-source state and
+        preserves the receiver's prior feedback so the next ``evaluate()``
+        can judge whether the broker actually addressed it.
+
         Args:
             source: Path to the candidate folder produced by
                 ``ads_ms_analysis.AdsMSAnalyzer.promote_code()`` (e.g.
@@ -86,7 +95,12 @@ class AnalysisBankReceiver:
             raise FileNotFoundError(f"Source candidate folder not found: {source_path}")
 
         # Sanity-check the source has the expected shape before copying
-        self._require_candidate_files(source_path)
+        proc_src = self._require_candidate_files(source_path)
+
+        # Find any existing candidates with matching _source.sql so we can
+        # remove them (one-per-source state) and harvest their most recent
+        # RECEIVER_FEEDBACK.md for the receiver's re-evaluation.
+        harvested_feedback = self._harvest_and_remove_same_source(proc_src)
 
         target_name = name or source_path.name
         CANDIDATES_DIR.mkdir(parents=True, exist_ok=True)
@@ -99,15 +113,94 @@ class AnalysisBankReceiver:
             )
 
         shutil.copytree(source_path, target)
+
+        # Drop the carried-forward feedback into the new candidate's procedure
+        # subfolder so the receiver agent picks it up during re-evaluation.
+        if harvested_feedback is not None:
+            target_proc = self._require_candidate_files(target)
+            (target_proc / "RECEIVER_FEEDBACK.md").write_text(
+                harvested_feedback, encoding="utf-8"
+            )
+            print("Carried forward prior RECEIVER_FEEDBACK.md from removed candidate(s).")
+
         print(f"Submitted candidate -> {target}")
         return target
+
+    @staticmethod
+    def _harvest_and_remove_same_source(new_proc_dir: Path) -> str | None:
+        """Remove existing candidates whose ``_source.sql`` matches the new one.
+
+        Returns the newest matching candidate's ``RECEIVER_FEEDBACK.md`` content
+        (by mtime), or ``None`` if no match exists or no matching candidate has
+        feedback. Defensive against malformed candidates and missing files.
+
+        Match is by exact source-content equality — same logic the producer
+        side uses for prior-feedback lookup, so the two sides agree on what
+        "the same script" means.
+        """
+        new_source_file = new_proc_dir / "_source.sql"
+        if not new_source_file.exists():
+            return None
+        try:
+            new_source_text = new_source_file.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        if not CANDIDATES_DIR.exists():
+            return None
+
+        matching: list[tuple[Path, Path]] = []
+        for cand in CANDIDATES_DIR.iterdir():
+            if not cand.is_dir() or cand.name.startswith("."):
+                continue
+            for sub in cand.iterdir():
+                if not sub.is_dir() or sub.name.startswith("."):
+                    continue
+                src_file = sub / "_source.sql"
+                if not src_file.exists():
+                    continue
+                try:
+                    if src_file.read_text(encoding="utf-8") == new_source_text:
+                        matching.append((cand, sub))
+                        break  # one matching subfolder per candidate is enough
+                except OSError:
+                    continue
+
+        if not matching:
+            return None
+
+        # Pick the newest RECEIVER_FEEDBACK.md among matches (if any) before
+        # we delete the folders. Newest wins so we always carry forward the
+        # most recent reviewer judgment.
+        with_fb = [
+            (cand, sub, (sub / "RECEIVER_FEEDBACK.md").stat().st_mtime)
+            for cand, sub in matching
+            if (sub / "RECEIVER_FEEDBACK.md").exists()
+        ]
+        carried: str | None = None
+        if with_fb:
+            with_fb.sort(key=lambda t: t[2], reverse=True)
+            _, latest_sub, _ = with_fb[0]
+            try:
+                carried = (latest_sub / "RECEIVER_FEEDBACK.md").read_text(encoding="utf-8")
+            except OSError:
+                carried = None
+
+        names = [c.name for c, _ in matching]
+        print(
+            f"Removing {len(matching)} stale candidate(s) with matching _source.sql: {names}"
+        )
+        for cand, _ in matching:
+            shutil.rmtree(cand)
+        return carried
 
     # ------------------------------------------------------------------
     # Evaluate
     # ------------------------------------------------------------------
 
     async def evaluate(
-        self, candidates_dir: Path | None = None
+        self,
+        candidates_dir: Path | None = None,
+        auto_discard_rejects: bool = False,
     ) -> list[ReceiverVerdict]:
         """Inspect ``candidates/``, evaluate each candidate, return verdicts.
 
@@ -117,7 +210,18 @@ class AnalysisBankReceiver:
              fails, without spending an LLM call
           3. Run the Opus receiver agent for the qualitative judgment
 
-        Returns list of :class:`ReceiverVerdict`.
+        Args:
+            candidates_dir: Override the directory to scan. Defaults to the
+                bank's ``candidates/`` folder.
+            auto_discard_rejects: When ``True``, immediately delete any
+                candidate folder that receives a ``REJECT`` verdict (saves a
+                manual ``discard()`` call). Defaults to ``False`` so the
+                operator can inspect the candidate before it's removed.
+
+        Returns:
+            List of :class:`ReceiverVerdict`. The list still includes REJECT
+            verdicts even when ``auto_discard_rejects=True`` — only the
+            on-disk folder is removed.
         """
         candidates_dir = candidates_dir or CANDIDATES_DIR
         if not candidates_dir.exists():
@@ -134,15 +238,22 @@ class AnalysisBankReceiver:
             return []
 
         results: list[ReceiverVerdict] = []
+        discarded = 0
         for folder in candidate_folders:
             verdict = await self._evaluate_candidate(folder)
             results.append(verdict)
             self._print_verdict(verdict)
+            if auto_discard_rejects and verdict.verdict == "REJECT":
+                shutil.rmtree(folder)
+                discarded += 1
+                print(f"      auto-discarded (REJECT, auto_discard_rejects=True)")
 
         accepted = [r for r in results if r.verdict == "ACCEPT"]
         if accepted:
             print(f"\n{len(accepted)} candidate(s) accepted.")
             print("Call receiver.apply(<candidate_name>) on each to merge into the library.")
+        if discarded:
+            print(f"\n{discarded} REJECTed candidate(s) auto-discarded.")
 
         return results
 
@@ -200,7 +311,42 @@ class AnalysisBankReceiver:
         if not result_text:
             logger.warning("Receiver agent returned empty result for %s", candidate_dir.name)
 
-        return self._parse_verdict(candidate_dir.name, result_text)
+        verdict = self._parse_verdict(candidate_dir.name, result_text)
+
+        # On REVISE, persist structured feedback so the next promote can pick
+        # it up via source-content matching. The agent is instructed to emit a
+        # `## RECEIVER_FEEDBACK` block; if it forgot, fall back to the verdict
+        # reason so the loop still has *something* useful.
+        if verdict.verdict == "REVISE":
+            structured = self._extract_feedback_section(result_text)
+            feedback_md = structured if structured else (
+                f"## RECEIVER_FEEDBACK\n\n"
+                f"### Summary\n{verdict.reason}\n\n"
+                f"_Note: agent did not emit a structured feedback block; "
+                f"this is the raw verdict reason._\n"
+            )
+            (proc_dir / "RECEIVER_FEEDBACK.md").write_text(feedback_md, encoding="utf-8")
+            logger.info("Wrote RECEIVER_FEEDBACK.md for %s", candidate_dir.name)
+
+        return verdict
+
+    @staticmethod
+    def _extract_feedback_section(agent_output: str) -> str | None:
+        """Return everything from the ``## RECEIVER_FEEDBACK`` heading onward,
+        or ``None`` if no such heading is present.
+
+        The heading match is anchored to a line start (so prose mentions of
+        the phrase don't trigger) and case-insensitive. Underscore vs space
+        between RECEIVER and FEEDBACK is tolerated.
+        """
+        marker = re.compile(
+            r"^##\s+RECEIVER[_ ]FEEDBACK\b",
+            re.IGNORECASE | re.MULTILINE,
+        )
+        m = marker.search(agent_output)
+        if not m:
+            return None
+        return agent_output[m.start():].strip() + "\n"
 
     def _build_prompt(self, candidate_dir: Path) -> str:
         """Per-candidate user prompt — paths only.
@@ -208,7 +354,25 @@ class AnalysisBankReceiver:
         The system prompt (``prompts/receiver_agent.md``) is the canonical
         explanation of how to read the three INDEX files and what criteria
         to apply. This builder just hands the agent the paths it needs.
+
+        If a ``RECEIVER_FEEDBACK.md`` exists in the candidate's procedure
+        subfolder (placed there either by a prior REVISE round or carried
+        forward by ``submit()``), surface its path explicitly so the agent
+        doesn't have to glob to discover it.
         """
+        proc_dir = self._require_candidate_files(candidate_dir)
+        prior_fb = proc_dir / "RECEIVER_FEEDBACK.md"
+
+        prior_block = ""
+        if prior_fb.exists():
+            prior_block = (
+                f"\n## Prior Round Feedback (re-promote)\n"
+                f"A previous round already reviewed an earlier version of this exact source "
+                f"script and asked for revisions. Read it FIRST, then in your new verdict "
+                f"explicitly call out any 'Concrete Fixes' items that remain unaddressed.\n"
+                f"- Prior feedback: {prior_fb}\n"
+            )
+
         return (
             f"Evaluate the candidate procedure submission in this folder.\n\n"
             f"## Paths\n"
@@ -216,7 +380,8 @@ class AnalysisBankReceiver:
             f"- BASELINE INDEX: {candidate_dir}/INDEX_BASELINE.md\n"
             f"- PROPOSED INDEX: {candidate_dir}/INDEX_PROPOSED.md\n"
             f"- LIVE INDEX: {INDEX_PATH}\n"
-            f"- Procedures directory: {PROCEDURES_DIR}\n\n"
+            f"- Procedures directory: {PROCEDURES_DIR}\n"
+            f"{prior_block}\n"
             f"See your system prompt for how to read the three INDEX files and what to "
             f"judge. Respond with exactly one VERDICT line.\n"
         )
@@ -438,7 +603,13 @@ class AnalysisBankReceiver:
         if proc_dst.exists():
             shutil.rmtree(proc_dst)
             logger.info("Removed existing %s (overwrite)", proc_dst)
-        shutil.copytree(proc_src, proc_dst)
+        # `_source.sql` (the bare SQL the procedure was abstracted from) and
+        # `RECEIVER_FEEDBACK.md` (REVISE feedback for the next promote) are
+        # curator-loop artifacts — they belong in candidates/, not procedures/.
+        shutil.copytree(
+            proc_src, proc_dst,
+            ignore=shutil.ignore_patterns("_source.sql", "RECEIVER_FEEDBACK.md"),
+        )
         logger.info("Installed procedure to %s", proc_dst)
 
         shutil.rmtree(candidate_dir)
