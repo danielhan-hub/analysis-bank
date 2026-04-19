@@ -82,7 +82,7 @@ Asynchronously evaluate every candidate in `candidates/`. For each one:
 | Param | Type | Description |
 |---|---|---|
 | `candidates_dir` | `Path \| None` | Override the directory to scan. Defaults to the bank's `candidates/`. |
-| `auto_discard_rejects` | `bool` | When `True`, immediately delete any candidate that receives a `REJECT` verdict (saves a manual `discard()` call). Default `False` — operator can inspect first. |
+| `auto_discard_rejects` | `bool` | When `True`, immediately delete any candidate that receives a `REJECT` verdict (saves a manual `discard()` call). Default `False` — operator can inspect first. **Trust-mode side effect:** also neutralizes the producer-side REJECT block in `promote_code()`, since that block works by finding `RECEIVER_REJECT.md` in `candidates/` and auto-discard removes the whole folder. Set `True` only if you want "trust the receiver, don't keep memory either." |
 
 Returns a list of `ReceiverVerdict(candidate, verdict, reason)` where verdict is `"ACCEPT"`, `"REJECT"`, or `"REVISE"`. The list still includes REJECT verdicts even when `auto_discard_rejects=True` — only the on-disk folder is removed.
 

@@ -256,6 +256,18 @@ class AnalysisBankReceiver:
                 manual ``discard()`` call). Defaults to ``False`` so the
                 operator can inspect the candidate before it's removed.
 
+                **Trust-mode side effect.** Setting this ``True`` also
+                neutralizes the producer-side REJECT block in
+                ``ads_ms_analysis.AdsMSAnalyzer.promote_code()``. That block
+                works by finding ``RECEIVER_REJECT.md`` next to a matching
+                ``_source.sql`` in ``candidates/``; auto-discard removes the
+                whole folder, so the producer finds nothing on the next
+                ``promote_code()`` of the same source and proceeds normally.
+                In other words: ``auto_discard_rejects=True`` means "I trust
+                the receiver; don't keep memory either." If you want the
+                producer to remember rejections, leave this ``False`` and
+                ``discard()`` manually after reviewing.
+
                 There is deliberately NO symmetric ``auto_apply_accepts``
                 knob: ``apply()`` is irreversible (writes to live INDEX.md +
                 procedures/) and runs drift refusal + smoke re-test guards
