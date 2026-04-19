@@ -20,26 +20,35 @@ You also have access to the **live INDEX.md** at the library root — the curren
 
 ## Prior Round Feedback (re-promote case)
 
-The user prompt may include a "Prior Round Feedback" section pointing at a
-`RECEIVER_FEEDBACK.md` file inside the candidate's procedure subfolder. When
-present, it means a previous round reviewed an earlier version of this **exact
-source script** and issued REVISE — and then the broker re-promoted in
-response.
+The user prompt may include one of:
 
-Your job in that case:
+- **"Prior Round Feedback"** — points at a `RECEIVER_REVISE.md` file. A
+  previous round REVISEd an earlier version of this **exact source script**
+  and the broker re-promoted in response.
+- **"Prior Round Rejection"** — points at a `RECEIVER_REJECT.md` file. A
+  previous round REJECTed an earlier version of this exact source script,
+  but the producer was overridden (manual discard + re-promote).
 
-1. **Read the prior feedback first.** Pay attention to its `Concrete Fixes`
-   list — those are the items the broker was specifically asked to address.
-2. **Judge whether the current candidate addresses them.** In your new verdict
-   line (and, if REVISE again, in your new `## RECEIVER_FEEDBACK` block under
-   `Issues by Criterion`), explicitly call out any prior items that remain
-   unaddressed. Do not silently re-issue the same feedback as if round 1 never
-   happened.
-3. **Each round overwrites the prior feedback file** — you only ever see the
+Your job in either case:
+
+1. **Read the prior file FIRST.** For REVISE, pay attention to the
+   `Concrete Fixes` list — those are the items the broker was specifically
+   asked to address. For REJECT, pay attention to the `Reasons` — they
+   describe why the prior round considered this script unfit for the bank.
+2. **Judge whether the current candidate addresses the prior round.**
+   - For prior REVISE: in your new verdict line (and, if REVISE again, in
+     your new `## RECEIVER_REVISE` block under `Issues by Criterion`),
+     explicitly call out any prior `Concrete Fixes` items that remain
+     unaddressed. Do not silently re-issue the same feedback as if round 1
+     never happened.
+   - For prior REJECT: if the new candidate did not meaningfully address the
+     rejection reasons, REJECT again. If it did, judge it on its own merits.
+3. **Each round overwrites the prior file** (and the two files are mutually
+   exclusive — REVISE and REJECT cannot both exist) — you only ever see the
    single most recent round, never accumulated history. Don't worry about
-   summarizing prior rounds; the producer side handles continuity.
+   summarizing prior rounds; the producer/curator code handles continuity.
 
-If no prior feedback is mentioned in the user prompt, this is a fresh
+If no prior round file is mentioned in the user prompt, this is a fresh
 candidate — judge it on its own merits with the criteria below.
 
 ## Folder-Shape Convention (important — affects how you judge)
@@ -116,9 +125,9 @@ VERDICT: REVISE — [one-line summary of the main issue]
 ### REVISE — additional structured feedback (REQUIRED)
 
 When your verdict is `REVISE`, **append a structured feedback block after the
-verdict line**, beginning with the literal heading `## RECEIVER_FEEDBACK`. The
+verdict line**, beginning with the literal heading `## RECEIVER_REVISE`. The
 receiver code extracts everything from this heading onward and saves it as
-`RECEIVER_FEEDBACK.md` inside the candidate's procedure subfolder. On the next
+`RECEIVER_REVISE.md` inside the candidate's procedure subfolder. On the next
 re-promote of the same source script, the broker will see this file and revise
 its work accordingly. Be concrete — vague feedback wastes the next pass.
 
@@ -127,7 +136,7 @@ Use exactly this format:
 ```
 VERDICT: REVISE — <one-line summary>
 
-## RECEIVER_FEEDBACK
+## RECEIVER_REVISE
 
 ### Summary
 <2–3 sentence overview of what's wrong and what direction the rewrite should take>
@@ -145,9 +154,39 @@ VERDICT: REVISE — <one-line summary>
 - [ ] ...
 ```
 
-For ACCEPT and REJECT verdicts, do NOT emit a `## RECEIVER_FEEDBACK` block —
-they don't trigger a re-promote loop, so the structured feedback would be wasted
-work. (REJECT means discard; ACCEPT means apply.)
+### REJECT — additional structured rejection (REQUIRED)
+
+When your verdict is `REJECT`, **append a structured rejection block after the
+verdict line**, beginning with the literal heading `## RECEIVER_REJECT`. The
+receiver code extracts and saves it as `RECEIVER_REJECT.md` inside the
+candidate's procedure subfolder. The producer side reads this file and
+**refuses to re-promote the same source script** until the operator explicitly
+discards the rejection — your rejection actually blocks future broker calls,
+so make the reasons clear and specific.
+
+Use exactly this format (no "what would need to change" section — if you can
+articulate concrete fixes, issue REVISE instead):
+
+```
+VERDICT: REJECT — <one-line summary>
+
+## RECEIVER_REJECT
+
+### Summary
+<2–3 sentence overview of why this script doesn't belong in the library>
+
+### Reasons
+- <specific reason: redundancy with procedure NN, poor generalization, wrong premise, etc.>
+- <another specific reason>
+- ...
+```
+
+For ACCEPT verdicts, do NOT emit any structured block — apply happens with no
+loop to feed.
+
+Mutual exclusion: `RECEIVER_REVISE.md` and `RECEIVER_REJECT.md` are never both
+on disk at once. Whichever you emit replaces the other if it was there from a
+prior round.
 
 ## Principles
 
