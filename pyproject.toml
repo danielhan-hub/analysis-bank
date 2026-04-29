@@ -17,10 +17,12 @@ dev = [
 requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-packages = ["analysis_bank"]
+[tool.setuptools.packages.find]
+include = ["analysis_bank*"]
+exclude = ["tests*"]
 
 [tool.setuptools.package-data]
 "analysis_bank" = [
     "prompts/**/*.md",
+    "features/feature_dict.md",
 ]

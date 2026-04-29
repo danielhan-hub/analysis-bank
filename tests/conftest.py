@@ -1,10 +1,9 @@
 """Shared fixtures for the analysis_bank test suite.
 
 These tests cover the synchronous code paths of AnalysisBankReceiver
-(submit, apply, discard, classify, guards) and the REVISE/REJECT verdict
-file lifecycle. The async ``evaluate()`` LLM call is exercised by patching
-out ``_evaluate_candidate`` with a fake that returns a canned verdict
-string — we never drive the SDK in tests.
+(submit, evaluate, discard) and the features module (registry CSV, retrieval).
+The async ``evaluate()`` LLM call is exercised by patching out
+``_evaluate_one`` with a fake — we never drive the real SDK in tests.
 """
 from __future__ import annotations
 
@@ -13,25 +12,13 @@ from pathlib import Path
 import pytest
 
 import analysis_bank.receiver as rcv_mod
+import analysis_bank.features.registry as reg_mod
+import analysis_bank.features.retrieval as ret_mod
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def make_baseline_index(n_lines: int = 50) -> str:
-    """A reasonable INDEX.md with N lines."""
-    rows = "\n".join([f"| {i:02d} | proc_{i} | desc {i} |" for i in range(1, 11)])
-    body_lines = [f"line content {i}" for i in range(n_lines)]
-    return (
-        "# Analysis Bank — INDEX\n\n"
-        "## Routing Table\n"
-        "| NN | Name | Description |\n"
-        "|----|------|-------------|\n"
-        f"{rows}\n\n"
-        + "\n".join(body_lines)
-    )
 
 
 def make_fake_proc_sql(name: str = "fake_proc") -> str:
@@ -49,31 +36,34 @@ def make_candidate(
     candidates_dir: Path,
     *,
     name: str,
-    proc_subfolder: str,
-    proposed_text: str | None = None,
-    baseline_text: str | None = None,
     include_readme: bool = True,
     include_sql: bool = True,
     proc_content: str | None = None,
-    extra_files: dict[str, str] | None = None,
-) -> tuple[Path, Path]:
+) -> Path:
     """Build a candidate folder under ``candidates_dir``.
 
-    Returns ``(candidate_dir, procedure_subfolder_dir)``.
+    The new shape: candidate_dir/<analysis_id>/{procedure.sql, README.md} —
+    no nested procedure subfolder, no INDEX_BASELINE/INDEX_PROPOSED.
+
+    Returns the candidate dir.
     """
     cand = candidates_dir / name
     cand.mkdir(parents=True, exist_ok=True)
-    (cand / "INDEX_BASELINE.md").write_text(baseline_text or make_baseline_index(60))
-    (cand / "INDEX_PROPOSED.md").write_text(proposed_text or make_baseline_index(70))
-    proc = cand / proc_subfolder
-    proc.mkdir()
     if include_sql:
-        (proc / "procedure.sql").write_text(proc_content or make_fake_proc_sql())
+        (cand / "procedure.sql").write_text(proc_content or make_fake_proc_sql())
     if include_readme:
-        (proc / "README.md").write_text("# Test proc\n")
-    for fname, content in (extra_files or {}).items():
-        (proc / fname).write_text(content)
-    return cand, proc
+        (cand / "README.md").write_text(f"# {name}\n\nTest procedure.\n")
+    return cand
+
+
+def fake_scores(seed: int = 0) -> dict[str, int]:
+    """Return a deterministic 76-feature score dict for testing."""
+    from analysis_bank import feature_columns
+
+    cols = feature_columns()
+    # Cycle integers in [-5, 5] offset by seed so different seeds give
+    # different vectors but every feature gets a value.
+    return {c: ((i + seed) % 11) - 5 for i, c in enumerate(cols)}
 
 
 # ---------------------------------------------------------------------------
@@ -83,29 +73,39 @@ def make_candidate(
 
 @pytest.fixture
 def tmp_bank(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
-    """Create a temp 'bank' with INDEX.md, procedures/, candidates/.
+    """Create a temp 'bank' with procedures/, candidates/, analysis_features.csv.
 
-    Returns ``(tmp_root, index_path, procedures_dir, candidates_dir)``.
-    Patches the module-level constants in ``analysis_bank.receiver`` to
-    point at the temp bank, and restores them on teardown so tests are
+    Returns ``(tmp_root, features_csv, procedures_dir, candidates_dir)``.
+    Patches the module-level constants in ``analysis_bank.receiver``,
+    ``analysis_bank.features.registry``, and ``analysis_bank.features.retrieval``
+    to point at the temp bank, and restores them on teardown so tests are
     isolated.
     """
     procs_dir = tmp_path / "procedures"
     cands_dir = tmp_path / "candidates"
-    index = tmp_path / "INDEX.md"
+    csv_path = tmp_path / "analysis_features.csv"
     procs_dir.mkdir()
     cands_dir.mkdir()
-    index.write_text(make_baseline_index(60))
 
-    # Save original module constants so we can restore them post-test.
-    original = (rcv_mod.INDEX_PATH, rcv_mod.PROCEDURES_DIR, rcv_mod.CANDIDATES_DIR)
-    rcv_mod.INDEX_PATH = index
+    original = (
+        rcv_mod.PROCEDURES_DIR,
+        rcv_mod.CANDIDATES_DIR,
+        reg_mod.FEATURES_CSV_PATH,
+        ret_mod.PROCEDURES_DIR,
+    )
     rcv_mod.PROCEDURES_DIR = procs_dir
     rcv_mod.CANDIDATES_DIR = cands_dir
+    reg_mod.FEATURES_CSV_PATH = csv_path
+    ret_mod.PROCEDURES_DIR = procs_dir
     try:
-        yield tmp_path, index, procs_dir, cands_dir
+        yield tmp_path, csv_path, procs_dir, cands_dir
     finally:
-        rcv_mod.INDEX_PATH, rcv_mod.PROCEDURES_DIR, rcv_mod.CANDIDATES_DIR = original
+        (
+            rcv_mod.PROCEDURES_DIR,
+            rcv_mod.CANDIDATES_DIR,
+            reg_mod.FEATURES_CSV_PATH,
+            ret_mod.PROCEDURES_DIR,
+        ) = original
 
 
 @pytest.fixture
@@ -125,3 +125,21 @@ def src_dir(tmp_path: Path) -> Path:
     out = tmp_path / "_outside_bank"
     out.mkdir()
     return out
+
+
+@pytest.fixture
+def fake_scorer(monkeypatch):
+    """Patch the receiver's ``score`` import to return canned scores.
+
+    Returns a list that the test can mutate to control which scores are
+    returned on each call (FIFO; if exhausted, the last entry is reused).
+    """
+    queue: list[dict[str, int]] = [fake_scores(0)]
+
+    async def _fake_score(readme_text: str, sql_text: str) -> dict[str, int]:
+        if not queue:
+            raise RuntimeError("fake_scorer queue is empty")
+        return queue[0] if len(queue) == 1 else queue.pop(0)
+
+    monkeypatch.setattr(rcv_mod, "score", _fake_score)
+    return queue
