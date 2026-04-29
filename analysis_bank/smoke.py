@@ -3,7 +3,6 @@
 Used by:
 - ``ads_ms_analysis.promote_code()`` after the broker writes a candidate
 - ``analysis_bank.AnalysisBankReceiver.evaluate()`` as a pre-LLM gate
-- ``analysis_bank.AnalysisBankReceiver.apply()`` before merging
 
 The test runs ``snow sql -f <procedure.sql>`` to compile the procedure,
 then extracts and runs the documented SAMPLE CALL to confirm it works.
