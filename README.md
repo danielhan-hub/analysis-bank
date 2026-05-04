@@ -1,6 +1,6 @@
 # Analysis Bank
 
-A curated library of reusable Snowflake stored procedures for Instacart Ads Measurement Science. Each procedure is scored against a fixed 76-feature rubric so retrieval can find the closest matches for a new question by feature-vector similarity.
+A curated library of reusable **end-to-end analysis bundles** for Instacart Ads Measurement Science. Each bundle is anchored by a parameterized Snowflake stored procedure (`procedure.sql`) and ships with a documented README and — when the source analysis produced a chart — a callable `chart.py` that renders the canonical visualization. Each bundle is scored against a fixed 76-feature rubric so retrieval can find the closest matches for a new question by feature-vector similarity.
 
 ## What's in here
 
@@ -18,26 +18,30 @@ analysis_bank/                  # Python package
     scoring_agent.md            # System prompt for the 5-juror scorer
     inspector_agent.md          # System prompt for the receiver Opus agent
 analysis_features.csv           # One row per scored procedure (analysis_id + 76 features)
-procedures/                     # Installed stored procedures (a_<YYYYMMDD>_<6hex>/)
+procedures/                     # Installed analysis bundles (a_<YYYYMMDD>_<6hex>/)
   <analysis_id>/
-    README.md                   # What this procedure answers, params, output
+    README.md                   # What this bundle answers, params, output
     procedure.sql               # The Snowflake CREATE OR REPLACE PROCEDURE
-candidates/                     # Inbox for proposed new procedures (curator workspace)
+    chart.py                    # OPTIONAL — callable render_chart(...) generalized from the source notebook
+    [other source artifacts]    # CSV outputs, helper scripts, notes carried forward by promotion
+candidates/                     # Inbox for proposed new bundles (curator workspace)
 scripts/
   backfill_existing_procedures.py  # One-shot migration: score + rename existing procs
 ```
 
-The bank is **curated**. New procedures don't land here automatically — they're proposed by the [`ads_ms_analysis`](../ads_ms_analysis) promote step, then evaluated and merged by the curator using `AnalysisBankReceiver`.
+The bank is **curated**. New bundles don't land here automatically — they're proposed by the [`ads_ms_analysis`](../ads_ms_analysis) promote step, then evaluated and merged by the curator using `AnalysisBankReceiver`.
 
 ## Curator workflow
 
-End-to-end, a new procedure travels:
+End-to-end, a new analysis bundle travels:
 
 ```
-analyst writes one-off SQL
+analyst's run produces an end-to-end bundle
+(SQL + chart.ipynb + chart.png + CSV)
         │
         │  ads_ms_analysis.AdsMSAnalyzer.promote_code()
-        │  (broker generalizes script → procedure.sql + README.md)
+        │  (broker generalizes script → procedure.sql + README.md;
+        │   when chart.ipynb is present, also emits chart.py)
         ▼
 <case>/codes/<analysis_id>/      ← candidate folder (a_<YYYYMMDD>_<6hex>/)
         │
@@ -74,7 +78,7 @@ Copy a candidate folder into the bank's `candidates/` directory.
 
 **Refuses** (raises) on:
 - Source folder doesn't exist (`FileNotFoundError`)
-- Source folder is malformed — missing `procedure.sql` or `README.md`
+- Source folder is malformed — missing `procedure.sql` or `README.md`. When `chart.py` is present, it must also pass smoke-import, signature, and hardcoded-id checks (see Receiver Validation below).
 - A candidate with the resolved name already exists in `candidates/` (`FileExistsError`)
 
 Returns the new path under `candidates/`.

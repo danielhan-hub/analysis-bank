@@ -1,9 +1,11 @@
-"""Submit, evaluate, and discard candidate procedure submissions.
+"""Submit, evaluate, and discard candidate analysis bundle submissions.
 
 The receiver is the customs gate for the analysis bank: it copies a candidate
-folder into ``candidates/``, smoke-tests + inspector-judges it, and on ACCEPT
-auto-merges into ``procedures/`` while writing the procedure's feature scores
-into ``analysis_features.csv``. There is no REVISE loop; verdict is single-shot.
+folder (an end-to-end analysis bundle: ``procedure.sql`` + ``README.md`` +
+optional ``chart.py`` + sibling artifacts) into ``candidates/``, smoke-tests +
+inspector-judges it, and on ACCEPT auto-merges into ``procedures/`` while
+writing the bundle's feature scores into ``analysis_features.csv``.
+There is no REVISE loop; verdict is single-shot.
 
 Public methods (curator-facing):
 - ``submit(source, name=None)`` — copy a candidate folder into ``candidates/``
@@ -16,7 +18,10 @@ Public methods (curator-facing):
 from __future__ import annotations
 
 import asyncio
+import importlib.util
+import inspect
 import logging
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,7 +47,7 @@ class ReceiverVerdict:
 
 
 class AnalysisBankReceiver:
-    """Evaluates candidate procedure submissions; ACCEPT auto-merges.
+    """Evaluates candidate analysis bundle submissions; ACCEPT auto-merges.
 
     Usage::
 
@@ -171,7 +176,6 @@ class AnalysisBankReceiver:
 
         self._require_candidate_files(candidate_dir)
         proc_sql = candidate_dir / "procedure.sql"
-        readme = candidate_dir / "README.md"
 
         # Code-side gate: a candidate that doesn't compile or whose SAMPLE CALL
         # fails has no business being judged on documentation quality.
@@ -287,20 +291,36 @@ class AnalysisBankReceiver:
     # ------------------------------------------------------------------
 
     def _build_prompt(self, candidate_dir: Path) -> str:
+        chart_py = candidate_dir / "chart.py"
+        chart_line = (
+            f"- chart.py: {chart_py} (OPTIONAL — present)\n"
+            if chart_py.exists()
+            else ""
+        )
         return (
-            f"Evaluate the candidate procedure submission in this folder.\n\n"
+            f"Evaluate the candidate analysis bundle submission in this folder.\n\n"
             f"## Paths\n"
             f"- Candidate folder: {candidate_dir}\n"
             f"- procedure.sql: {candidate_dir / 'procedure.sql'}\n"
-            f"- README.md: {candidate_dir / 'README.md'}\n\n"
-            f"See your system prompt for what to judge. Respond with exactly "
+            f"- README.md: {candidate_dir / 'README.md'}\n"
+            f"{chart_line}"
+            f"\nSee your system prompt for what to judge. Respond with exactly "
             f"one VERDICT line. On REJECT, append the required "
             f"`## Suggested Changes` block.\n"
         )
 
     @staticmethod
     def _require_candidate_files(candidate_dir: Path) -> None:
-        """Fail fast if the candidate is missing procedure.sql or README.md."""
+        """Fail fast if the candidate is missing procedure.sql or README.md.
+
+        Validates `chart.py` if present (optional — bundles without a
+        chart notebook simply omit it):
+          - Smoke-import to surface syntax errors before the LLM judges it.
+          - Confirm a callable named `render_chart` (or any function with
+            at least one required positional arg) exists.
+          - Sweep for hardcoded entity / account IDs — same regex used on
+            procedure.sql.
+        """
         for name in ("procedure.sql", "README.md"):
             if not (candidate_dir / name).exists():
                 raise FileNotFoundError(
@@ -309,6 +329,110 @@ class AnalysisBankReceiver:
                     f"procedure.sql and README.md at the top of the analysis_id "
                     f"folder."
                 )
+        chart_py = candidate_dir / "chart.py"
+        if chart_py.exists():
+            AnalysisBankReceiver._validate_chart_py(chart_py)
+
+    @staticmethod
+    def _validate_chart_py(chart_py: Path) -> None:
+        """Smoke-import + signature + hardcoded-id + CSV-read checks for chart.py."""
+        text = chart_py.read_text(encoding="utf-8")
+
+        # Hardcoded-id sweep: account_id / entity_l1_id / brand_id / promotion_id
+        # equality assignments at module/function scope. Same intent as the
+        # broker's parameterization rule. The `\b` prevents false positives
+        # against the parameter names themselves (e.g. `v_account_id=45` in
+        # the __main__ block, where `account_id` is only a substring).
+        hardcoded = re.findall(
+            r"\b(?:account_id|entity_l1_id|brand_id|promotion_id|campaign_id)\s*=\s*\d+",
+            text,
+        )
+        if hardcoded:
+            raise ValueError(
+                f"chart.py in {chart_py.parent.name} hardcodes entity/account "
+                f"IDs ({hardcoded[:3]}). Every case-specific value must be a "
+                f"function parameter so the chart generalizes."
+            )
+
+        # CSV-read sweep: chart.py must hit the live procedure via iq.query, not
+        # re-render a frozen CSV. The source notebook reads CSV because it
+        # snapshots one case; the promoted callable has to work for any future
+        # case's args, so reading from disk defeats the point.
+        csv_reads = re.findall(
+            r"pd\.read_csv\s*\(|(?<!\w)read_csv\s*\(|open\s*\([^)]*\.csv",
+            text,
+        )
+        if csv_reads:
+            raise ValueError(
+                f"chart.py in {chart_py.parent.name} reads from CSV "
+                f"({csv_reads[:3]}). The promoted chart must load data via "
+                f"`iq.query(\"CALL <proc>(...)\")` so it works for any future "
+                f"case — not from a frozen CSV path tied to the source bundle."
+            )
+
+        # __main__ guard sweep: chart.py must be runnable as `python chart.py`
+        # to reproduce the source PNG. Without an `if __name__ == "__main__":`
+        # block calling render_chart with the SAMPLE CALL args, running the
+        # file does nothing and the operator can't smoke-test the chart.
+        if not re.search(r"if\s+__name__\s*==\s*['\"]__main__['\"]", text):
+            raise ValueError(
+                f"chart.py in {chart_py.parent.name} is missing an "
+                f"`if __name__ == \"__main__\":` block. The broker must "
+                f"append one that calls render_chart with the SAMPLE CALL "
+                f"args from procedure.sql, so `python chart.py` reproduces "
+                f"the source PNG."
+            )
+
+        # Smoke import — catch syntax errors before the inspector runs.
+        spec = importlib.util.spec_from_file_location(
+            f"_chart_{chart_py.parent.name}", chart_py
+        )
+        if spec is None or spec.loader is None:
+            raise ValueError(f"Could not load chart.py from {chart_py}")
+        module = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(module)
+        except Exception as e:
+            raise ValueError(
+                f"chart.py in {chart_py.parent.name} failed to import: "
+                f"{type(e).__name__}: {e}"
+            ) from e
+
+        # Signature check — find a callable function with at least one
+        # required positional arg. Prefer `render_chart`, but accept any
+        # such function so the broker has flexibility.
+        candidates = [
+            (name, obj) for name, obj in vars(module).items()
+            if callable(obj)
+            and not name.startswith("_")
+            and getattr(obj, "__module__", None) == module.__name__
+        ]
+        chart_fn = next(
+            (obj for name, obj in candidates if name == "render_chart"), None
+        )
+        if chart_fn is None and candidates:
+            chart_fn = candidates[0][1]
+        if chart_fn is None:
+            raise ValueError(
+                f"chart.py in {chart_py.parent.name} defines no callable "
+                f"function. Expected a `render_chart(...)` (or similar)."
+            )
+        sig = inspect.signature(chart_fn)
+        required = [
+            p for p in sig.parameters.values()
+            if p.default is inspect.Parameter.empty
+            and p.kind in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            )
+        ]
+        if not required:
+            raise ValueError(
+                f"chart.py in {chart_py.parent.name}: `{chart_fn.__name__}` "
+                f"has no required positional args. The procedure parameters "
+                f"must be required args so callers cannot accidentally render "
+                f"the wrong case."
+            )
 
     def _load_inspector_prompt(self) -> str:
         if self._prompt is None:
