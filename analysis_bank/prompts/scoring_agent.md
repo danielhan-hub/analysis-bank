@@ -8,7 +8,7 @@ The orchestrator calls you 5 times in parallel on the same input, sorts your sco
 
 You will receive one of:
 
-- **An analysis to score**: a `README.md` plus a `procedure.sql`. Score what is *actually present* in the analysis.
+- **An analysis to score**: a `README.md` plus a `procedure.sql`, and *optionally* a `chart.py`. Score what is *actually present* in the bundle. Use the `chart.py` (when present) as a minor additional signal — e.g., the chart pattern can corroborate features about visual emphasis, comparison style, or temporal framing — but the SQL is the primary surface area. Absence of `chart.py` is not penalized; some analyses are narrative- or scalar-only.
 - **A question to score**: an analyst question, plus a case summary for context. Score the question *as if you were scoring the SQL that would best answer it* — what would that SQL emphasize, scope, control for, or compute? The case summary is context (brand, moment, setting); do not score the summary.
 
 The unified rubric works for both.

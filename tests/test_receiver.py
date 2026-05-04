@@ -104,6 +104,177 @@ def test_require_files_happy(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# _validate_chart_py (optional file)
+# ---------------------------------------------------------------------------
+
+
+def _good_chart_py() -> str:
+    return (
+        "def render_chart(v_account_id, v_start_date, *, "
+        "figsize=(8, 5), output_path='chart.png'):\n"
+        "    return None\n"
+        "\n"
+        "if __name__ == '__main__':\n"
+        "    render_chart(v_account_id=1, v_start_date='2026-01-01')\n"
+    )
+
+
+def test_chart_py_optional_when_absent(tmp_path):
+    """No chart.py present -> validation passes with just SQL + README."""
+    cand = tmp_path / "no_chart"
+    cand.mkdir()
+    (cand / "procedure.sql").write_text("x")
+    (cand / "README.md").write_text("x")
+    # Must not raise — chart.py is optional
+    AnalysisBankReceiver._require_candidate_files(cand)
+
+
+def test_chart_py_smoke_pass(tmp_path):
+    """Valid chart.py with required positional args + clean import passes."""
+    cand = tmp_path / "good_chart"
+    cand.mkdir()
+    (cand / "procedure.sql").write_text("x")
+    (cand / "README.md").write_text("x")
+    (cand / "chart.py").write_text(_good_chart_py())
+    AnalysisBankReceiver._require_candidate_files(cand)
+
+
+def test_chart_py_hardcoded_account_id_rejected(tmp_path):
+    """A chart.py that hardcodes account_id is rejected."""
+    cand = tmp_path / "hard_id"
+    cand.mkdir()
+    (cand / "procedure.sql").write_text("x")
+    (cand / "README.md").write_text("x")
+    (cand / "chart.py").write_text(
+        "def render_chart(*, output_path='chart.png'):\n"
+        "    account_id = 12345\n"
+        "    return account_id\n"
+    )
+    with pytest.raises(ValueError, match="hardcodes entity/account"):
+        AnalysisBankReceiver._require_candidate_files(cand)
+
+
+def test_chart_py_csv_read_rejected(tmp_path):
+    """A chart.py that reads from CSV is rejected — must use iq.query."""
+    cand = tmp_path / "csv_read"
+    cand.mkdir()
+    (cand / "procedure.sql").write_text("x")
+    (cand / "README.md").write_text("x")
+    (cand / "chart.py").write_text(
+        "import pandas as pd\n"
+        "def render_chart(v_id, *, output_path='chart.png'):\n"
+        "    df = pd.read_csv('frozen_output.csv')\n"
+        "    return df\n"
+    )
+    with pytest.raises(ValueError, match="reads from CSV"):
+        AnalysisBankReceiver._require_candidate_files(cand)
+
+
+def test_chart_py_open_csv_rejected(tmp_path):
+    """An open('foo.csv') call is also caught by the CSV sweep."""
+    cand = tmp_path / "open_csv"
+    cand.mkdir()
+    (cand / "procedure.sql").write_text("x")
+    (cand / "README.md").write_text("x")
+    (cand / "chart.py").write_text(
+        "def render_chart(v_id, *, output_path='chart.png'):\n"
+        "    with open('frozen.csv') as f:\n"
+        "        data = f.read()\n"
+        "    return data\n"
+    )
+    with pytest.raises(ValueError, match="reads from CSV"):
+        AnalysisBankReceiver._require_candidate_files(cand)
+
+
+def test_chart_py_iq_query_passes(tmp_path):
+    """A chart.py that uses iq.query (the intended pattern) passes."""
+    cand = tmp_path / "iq_query"
+    cand.mkdir()
+    (cand / "procedure.sql").write_text("x")
+    (cand / "README.md").write_text("x")
+    (cand / "chart.py").write_text(
+        "def render_chart(v_id, *, output_path='chart.png'):\n"
+        "    # df = iq.query(f'CALL my_proc({v_id});')\n"
+        "    return None\n"
+        "\n"
+        "if __name__ == '__main__':\n"
+        "    render_chart(v_id=42)\n"
+    )
+    AnalysisBankReceiver._require_candidate_files(cand)
+
+
+def test_chart_py_syntax_error_rejected(tmp_path):
+    """A chart.py with a syntax error is rejected by smoke import."""
+    cand = tmp_path / "syntax_err"
+    cand.mkdir()
+    (cand / "procedure.sql").write_text("x")
+    (cand / "README.md").write_text("x")
+    # Include __main__ text so the syntax-error gate (smoke import) is what
+    # actually fires — otherwise the missing-__main__ gate would fire first.
+    (cand / "chart.py").write_text(
+        "def render_chart(:\n"
+        "    pass\n"
+        "if __name__ == '__main__':\n"
+        "    render_chart()\n"
+    )
+    with pytest.raises(ValueError, match="failed to import"):
+        AnalysisBankReceiver._require_candidate_files(cand)
+
+
+def test_chart_py_no_callable_rejected(tmp_path):
+    """A chart.py with no top-level callable is rejected."""
+    cand = tmp_path / "no_callable"
+    cand.mkdir()
+    (cand / "procedure.sql").write_text("x")
+    (cand / "README.md").write_text("x")
+    # Include __main__ so the missing-callable gate (signature check) is
+    # what actually fires.
+    (cand / "chart.py").write_text(
+        "X = 42\n"
+        "Y = 'string'\n"
+        "if __name__ == '__main__':\n"
+        "    print(X)\n"
+    )
+    with pytest.raises(ValueError, match="no callable"):
+        AnalysisBankReceiver._require_candidate_files(cand)
+
+
+def test_chart_py_no_required_args_rejected(tmp_path):
+    """A chart.py whose render_chart has only kwargs (no required args)
+    is rejected — procedure params must be required positional.
+    """
+    cand = tmp_path / "no_required"
+    cand.mkdir()
+    (cand / "procedure.sql").write_text("x")
+    (cand / "README.md").write_text("x")
+    (cand / "chart.py").write_text(
+        "def render_chart(*, output_path='chart.png'):\n"
+        "    return None\n"
+        "\n"
+        "if __name__ == '__main__':\n"
+        "    render_chart()\n"
+    )
+    with pytest.raises(ValueError, match="no required positional args"):
+        AnalysisBankReceiver._require_candidate_files(cand)
+
+
+def test_chart_py_missing_main_block_rejected(tmp_path):
+    """A chart.py without an `if __name__ == '__main__':` block is rejected
+    — the broker must append one so `python chart.py` reproduces the PNG.
+    """
+    cand = tmp_path / "no_main"
+    cand.mkdir()
+    (cand / "procedure.sql").write_text("x")
+    (cand / "README.md").write_text("x")
+    (cand / "chart.py").write_text(
+        "def render_chart(v_id, *, output_path='chart.png'):\n"
+        "    return None\n"
+    )
+    with pytest.raises(ValueError, match="__main__"):
+        AnalysisBankReceiver._require_candidate_files(cand)
+
+
+# ---------------------------------------------------------------------------
 # _parse_verdict
 # ---------------------------------------------------------------------------
 

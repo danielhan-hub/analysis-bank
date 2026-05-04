@@ -18,6 +18,7 @@ import json
 import logging
 import re
 import statistics
+from functools import lru_cache
 from typing import Awaitable, Callable
 
 from analysis_bank.features.registry import feature_columns
@@ -31,6 +32,7 @@ _JURY_SIZE = 5
 _PER_SCORE_TIMEOUT_S = 240
 
 
+@lru_cache(maxsize=1)
 def _load_scoring_prompt() -> str:
     return SCORING_PROMPT_PATH.read_text(encoding="utf-8")
 
