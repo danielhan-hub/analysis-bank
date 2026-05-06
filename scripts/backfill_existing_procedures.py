@@ -29,8 +29,8 @@ from pathlib import Path
 from analysis_bank import (
     FEATURES_CSV_PATH,
     PROCEDURES_DIR,
+    ascore,
     feature_columns,
-    score,
     upsert_row,
 )
 
@@ -57,7 +57,7 @@ async def score_one(proc_dir: Path) -> dict[str, int]:
     readme = (proc_dir / "README.md").read_text(encoding="utf-8")
     sql = (proc_dir / "procedure.sql").read_text(encoding="utf-8")
     print(f"  scoring {proc_dir.name} (5-jury)...", flush=True)
-    return await score(readme, sql)
+    return await ascore(readme, sql)
 
 
 def git_mv(src: Path, dst: Path) -> None:

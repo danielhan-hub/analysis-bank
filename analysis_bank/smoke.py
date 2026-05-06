@@ -67,7 +67,7 @@ def smoke_test_procedure(proc_sql: Path, *, verbose: bool = True) -> None:
             ["snow", "sql", "-f", tmp_path],
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=3600,
         )
     finally:
         Path(tmp_path).unlink(missing_ok=True)

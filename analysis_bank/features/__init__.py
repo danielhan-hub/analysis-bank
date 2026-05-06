@@ -4,7 +4,7 @@ from analysis_bank.features.registry import (
     load_all,
 )
 from analysis_bank.features.retrieval import nearest, Match
-from analysis_bank.features.scorer import score, score_question
+from analysis_bank.features.scorer import score, score_question, ascore, ascore_question
 
 __all__ = [
     "feature_columns",
@@ -14,4 +14,6 @@ __all__ = [
     "Match",
     "score",
     "score_question",
+    "ascore",
+    "ascore_question",
 ]

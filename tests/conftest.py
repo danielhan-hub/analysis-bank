@@ -129,7 +129,7 @@ def src_dir(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def fake_scorer(monkeypatch):
-    """Patch the receiver's ``score`` import to return canned scores.
+    """Patch the receiver's ``ascore`` import to return canned scores.
 
     Returns a list that the test can mutate to control which scores are
     returned on each call (FIFO; if exhausted, the last entry is reused).
@@ -141,5 +141,5 @@ def fake_scorer(monkeypatch):
             raise RuntimeError("fake_scorer queue is empty")
         return queue[0] if len(queue) == 1 else queue.pop(0)
 
-    monkeypatch.setattr(rcv_mod, "score", _fake_score)
+    monkeypatch.setattr(rcv_mod, "ascore", _fake_score)
     return queue

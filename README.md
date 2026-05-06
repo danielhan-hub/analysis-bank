@@ -22,7 +22,7 @@ procedures/                     # Installed analysis bundles (a_<YYYYMMDD>_<6hex
   <analysis_id>/
     README.md                   # What this bundle answers, params, output
     procedure.sql               # The Snowflake CREATE OR REPLACE PROCEDURE
-    chart.py                    # OPTIONAL — callable render_chart(...) generalized from the source notebook
+    chart.py                    # OPTIONAL — callable render_chart(...) that can produce one or more chart_n.png files
     [other source artifacts]    # CSV outputs, helper scripts, notes carried forward by promotion
 candidates/                     # Inbox for proposed new bundles (curator workspace)
 scripts/
@@ -37,7 +37,7 @@ End-to-end, a new analysis bundle travels:
 
 ```
 analyst's run produces an end-to-end bundle
-(SQL + chart.ipynb + chart.png + CSV)
+(SQL + chart.ipynb + chart_1.png [+ chart_2.png ...] + CSV)
         │
         │  ads_ms_analysis.AdsMSAnalyzer.promote_code()
         │  (broker generalizes script → procedure.sql + README.md;
@@ -49,7 +49,7 @@ analyst's run produces an end-to-end bundle
         ▼
 analysis_bank/candidates/<analysis_id>/
         │
-        │  await receiver.evaluate()    ← smoke-test + Opus single-shot judgment
+        │  receiver.evaluate()          ← smoke-test + Opus single-shot judgment
         ▼
 verdict: ACCEPT | REJECT
         │
@@ -83,9 +83,9 @@ Copy a candidate folder into the bank's `candidates/` directory.
 
 Returns the new path under `candidates/`.
 
-### `await evaluate(candidates_dir=None) -> list[ReceiverVerdict]`
+### `evaluate(candidates_dir=None) -> list[ReceiverVerdict]`
 
-Asynchronously evaluate every candidate in `candidates/`. For each one:
+Evaluate every candidate in `candidates/`. Sync — works in plain Python and in Jupyter without `asyncio.run` / `await`. For concurrent use inside an existing async context, call `await receiver.aevaluate()` instead. For each one:
 
 1. **Sanity check** files (`procedure.sql`, `README.md`)
 2. **Smoke test** the procedure against Snowflake (compiles + runs SAMPLE CALL). On failure → auto-`REJECT`, no LLM call spent.
@@ -96,8 +96,7 @@ Asynchronously evaluate every candidate in `candidates/`. For each one:
 Returns a list of `ReceiverVerdict(candidate, verdict, reason)` where verdict is `"ACCEPT"` or `"REJECT"`.
 
 ```python
-import asyncio
-verdicts = asyncio.run(receiver.evaluate())
+verdicts = receiver.evaluate()  # sync — works in Jupyter and terminal
 for v in verdicts:
     print(v.candidate, v.verdict, v.reason)
 ```
@@ -114,7 +113,7 @@ Delete every candidate folder from `candidates/`. Returns the number deleted.
 
 The 76-feature rubric in `features/feature_dict.md` is the canonical scoring spec. Both procedures and questions are scored against the same rubric so they live in the same vector space.
 
-**Scorer.** `analysis_bank.score(readme_text, sql_text)` and `analysis_bank.score_question(question, case_summary)` both run a 5-juror Olympics ensemble:
+**Scorer.** `analysis_bank.score(readme_text, sql_text)` and `analysis_bank.score_question(question, case_summary)` both run a 5-juror Olympics ensemble. Both are sync (Jupyter-friendly); for concurrent use inside async code, call the `ascore` / `ascore_question` variants directly.
 
 1. Five parallel scoring runs (Opus, `asyncio.gather`)
 2. Per feature: drop the highest and lowest score

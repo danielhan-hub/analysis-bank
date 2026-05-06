@@ -218,8 +218,11 @@ async def _jury(user_prompt: str, jury_size: int = _JURY_SIZE) -> dict[str, int]
     return final
 
 
-async def score(readme_text: str, sql_text: str) -> dict[str, int]:
-    """5-jury score of an analysis (README + procedure.sql).
+async def ascore(readme_text: str, sql_text: str) -> dict[str, int]:
+    """Async 5-jury score of an analysis (README + procedure.sql).
+
+    Use this when you need to run multiple scorings concurrently via
+    ``asyncio.gather``. Otherwise prefer the sync :func:`score`.
 
     Returns ``{feature_name: int}`` covering the 76 features in
     ``feature_columns()``.
@@ -227,10 +230,35 @@ async def score(readme_text: str, sql_text: str) -> dict[str, int]:
     return await _jury(_build_analysis_user_prompt(readme_text, sql_text))
 
 
-async def score_question(question_text: str, case_summary_text: str) -> dict[str, int]:
-    """5-jury score of an analyst question, with case summary as context.
+async def ascore_question(question_text: str, case_summary_text: str) -> dict[str, int]:
+    """Async 5-jury score of an analyst question, with case summary as context.
+
+    Use this when you need to run multiple scorings concurrently via
+    ``asyncio.gather``. Otherwise prefer the sync :func:`score_question`.
 
     Returns ``{feature_name: int}`` covering the 76 features in
     ``feature_columns()``.
     """
     return await _jury(_build_question_user_prompt(question_text, case_summary_text))
+
+
+def score(readme_text: str, sql_text: str) -> dict[str, int]:
+    """5-jury score of an analysis (README + procedure.sql).
+
+    Sync wrapper — works in plain Python AND in Jupyter without
+    ``asyncio.run`` or ``await``. For concurrent scoring inside an
+    existing async context, use :func:`ascore` directly.
+    """
+    from analysis_bank._async import run_sync
+    return run_sync(ascore(readme_text, sql_text))
+
+
+def score_question(question_text: str, case_summary_text: str) -> dict[str, int]:
+    """5-jury score of an analyst question, with case summary as context.
+
+    Sync wrapper — works in plain Python AND in Jupyter without
+    ``asyncio.run`` or ``await``. For concurrent scoring inside an
+    existing async context, use :func:`ascore_question` directly.
+    """
+    from analysis_bank._async import run_sync
+    return run_sync(ascore_question(question_text, case_summary_text))
