@@ -14,6 +14,8 @@ from analysis_bank.features import (
     Match,
     score,
     score_question,
+    ascore,
+    ascore_question,
 )
 from analysis_bank.receiver import AnalysisBankReceiver
 
@@ -31,6 +33,8 @@ __all__ = [
     "Match",
     "score",
     "score_question",
+    "ascore",
+    "ascore_question",
     "AnalysisBankReceiver",
 ]
 __version__ = "0.2.0"

@@ -26,7 +26,8 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from analysis_bank.features import score, upsert_row
+from analysis_bank.features import ascore, upsert_row
+from analysis_bank._async import run_sync
 from analysis_bank.paths import (
     CANDIDATES_DIR,
     INSPECTOR_PROMPT_PATH,
@@ -49,14 +50,17 @@ class ReceiverVerdict:
 class AnalysisBankReceiver:
     """Evaluates candidate analysis bundle submissions; ACCEPT auto-merges.
 
-    Usage::
+    Usage (Jupyter or terminal — no asyncio needed)::
 
         receiver = AnalysisBankReceiver()
         receiver.submit("/path/to/case/codes/a_20260424_a1b2c3")
-        verdicts = await receiver.evaluate()
+        verdicts = receiver.evaluate()
         # ACCEPTed candidates are already merged + scored.
         # REJECTed candidates remain in candidates/ — inspect, then:
         receiver.discard("a_20260424_a1b2c3")
+
+    For concurrent use inside an existing async context, call
+    ``await receiver.aevaluate()`` instead.
     """
 
     def __init__(self, timeout_seconds: int = 600, max_agent_turns: int = 50):
@@ -115,7 +119,19 @@ class AnalysisBankReceiver:
     # Evaluate
     # ------------------------------------------------------------------
 
-    async def evaluate(
+    def evaluate(
+        self,
+        candidates_dir: Path | None = None,
+    ) -> list[ReceiverVerdict]:
+        """Sync wrapper around :meth:`aevaluate` — works in plain Python AND
+        in Jupyter without ``asyncio.run`` or ``await``.
+
+        For concurrent use inside an existing async context, call
+        :meth:`aevaluate` directly.
+        """
+        return run_sync(self.aevaluate(candidates_dir=candidates_dir))
+
+    async def aevaluate(
         self,
         candidates_dir: Path | None = None,
     ) -> list[ReceiverVerdict]:
@@ -262,7 +278,7 @@ class AnalysisBankReceiver:
         proc_sql = candidate_dir / "procedure.sql"
         readme = candidate_dir / "README.md"
         try:
-            scores = await score(
+            scores = await ascore(
                 readme.read_text(encoding="utf-8"),
                 proc_sql.read_text(encoding="utf-8"),
             )

@@ -5,6 +5,7 @@ description = "Reusable stored procedure library for Ads MS analysis"
 requires-python = ">=3.10"
 dependencies = [
     "claude-agent-sdk>=0.1.0",
+    "snowflake-cli>=3.0.0",
 ]
 
 [project.optional-dependencies]
