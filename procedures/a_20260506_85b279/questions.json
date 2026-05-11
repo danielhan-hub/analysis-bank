@@ -1,0 +1,17 @@
+{
+  "summary": "Brand cohort opportunity composition — classify repeat category buyers into 5 brand-share cohorts (Brand Loyalist, Brand-Biased Switcher, Switcher No Brand Bias, Competitor-Biased Switcher, Competitor Loyalist) and size the Competitor Loyalist NTB pool with attached category sales. The Competitor Loyalist tier IS the addressable non-brand category-buyer pool — use this procedure whenever the question is 'how large is the category buyer universe that has NOT yet bought our brand, and what's their category spend?', whether the framing is the canonical 5-cohort 100% stacked column or a single addressable-pool sizing snapshot. Output schema (cohort × {user_count, pct_of_category, category_sales}) is fixed; the headline pool number is the Competitor Loyalist row.",
+  "questions": [
+    "Plot the brand cohort opportunity composition on a 100% stacked column with the addressable Competitor Loyalist NTB pool highlighted.",
+    "For this brand within these categories, split repeat category buyers into Brand Loyalist, Brand-Biased Switcher, Switcher No Brand Bias, Competitor-Biased Switcher, and Competitor Loyalist — show user counts and category sales per cohort.",
+    "How big is the addressable new-to-brand opportunity? Show the size of the Competitor Loyalist cohort (users who bought in the category multiple times but never picked our brand) and the category sales attached to it.",
+    "What share of repeat category buyers are competitor loyalists versus brand loyalists versus switchers? I want a 5-cohort percent-of-category breakdown.",
+    "Show the brand-share-of-category cohort distribution as a 100% stacked bar so I can pitch the addressable NTB pool to the brand team.",
+    "Brand cohort mix breakdown — five cohorts, percent of category, NTB pool highlighted.",
+    "I need a chart that classifies every repeat buyer in the category by what fraction of their category orders contained our brand, then buckets them into five cohorts (loyalists, switchers, competitor loyalists), reports cohort user counts and category sales, and visually calls out the Competitor Loyalist segment as the addressable acquisition pool.",
+    "Where does the brand acquisition opportunity live within this category — what's the cohort breakdown of brand-share-of-wallet among repeat shoppers?",
+    "How large is the addressable category buyer pool on Instacart that has NOT yet purchased our brand, and what is its category spend? Read off the Competitor Loyalist row of the 5-cohort table for the headline non-brand buyer count and attached category sales.",
+    "Size the non-brand category-buyer universe (vitamins/VMS/whatever the category is) and its category spend — the Competitor Loyalist tier of this procedure's output is exactly that pool, with the other 4 cohorts as context.",
+    "Sizing the upside of continued investment: how many distinct category buyers exist in our categories who haven't bought our brand, and how much do they spend in the category? Use the Competitor Loyalist cohort as the answer.",
+    "Addressable headroom snapshot — distinct non-brand category buyers and their category spend, plus the same numbers at the broader super-category level for comparison."
+  ]
+}

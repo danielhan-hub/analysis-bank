@@ -1,17 +1,22 @@
 """Shared fixtures for the analysis_bank test suite.
 
 These tests cover the synchronous code paths of AnalysisBankReceiver
-(submit, evaluate, discard) and the features module (registry CSV, retrieval).
-The async ``evaluate()`` LLM call is exercised by patching out
-``_evaluate_one`` with a fake — we never drive the real SDK in tests.
+(submit, evaluate, discard) and the features module (registry CSV,
+embedding persistence, retrieval). The async ``evaluate()`` LLM call
+is exercised by patching out ``_evaluate_one`` with a fake — we never
+drive the real SDK in tests. The dense encoder is patched by
+``fake_encoder`` so torch never has to load.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 import analysis_bank.receiver as rcv_mod
+import analysis_bank.features.embeddings as emb_mod
 import analysis_bank.features.registry as reg_mod
 import analysis_bank.features.retrieval as ret_mod
 
@@ -38,32 +43,34 @@ def make_candidate(
     name: str,
     include_readme: bool = True,
     include_sql: bool = True,
+    include_chart_skipped: bool = True,
+    include_questions: bool = True,
     proc_content: str | None = None,
 ) -> Path:
-    """Build a candidate folder under ``candidates_dir``.
-
-    The new shape: candidate_dir/<analysis_id>/{procedure.sql, README.md} —
-    no nested procedure subfolder, no INDEX_BASELINE/INDEX_PROPOSED.
-
-    Returns the candidate dir.
-    """
+    """Build a candidate folder under ``candidates_dir``."""
     cand = candidates_dir / name
     cand.mkdir(parents=True, exist_ok=True)
     if include_sql:
         (cand / "procedure.sql").write_text(proc_content or make_fake_proc_sql())
     if include_readme:
         (cand / "README.md").write_text(f"# {name}\n\nTest procedure.\n")
+    if include_chart_skipped:
+        (cand / "chart_skipped.md").write_text(
+            "single scalar — no chart needed for this test fixture."
+        )
+    if include_questions:
+        (cand / "questions.json").write_text(
+            json.dumps(
+                {
+                    "summary": f"Test fixture summary for {name}.",
+                    "questions": [
+                        f"test paraphrase {i} for {name}" for i in range(1, 9)
+                    ],
+                },
+                indent=2,
+            )
+        )
     return cand
-
-
-def fake_scores(seed: int = 0) -> dict[str, int]:
-    """Return a deterministic 76-feature score dict for testing."""
-    from analysis_bank import feature_columns
-
-    cols = feature_columns()
-    # Cycle integers in [-5, 5] offset by seed so different seeds give
-    # different vectors but every feature gets a value.
-    return {c: ((i + seed) % 11) - 5 for i, c in enumerate(cols)}
 
 
 # ---------------------------------------------------------------------------
@@ -90,21 +97,27 @@ def tmp_bank(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     original = (
         rcv_mod.PROCEDURES_DIR,
         rcv_mod.CANDIDATES_DIR,
+        rcv_mod.PROCEDURES_INDEX_PATH,
         reg_mod.FEATURES_CSV_PATH,
         ret_mod.PROCEDURES_DIR,
+        emb_mod.PROCEDURES_DIR,
     )
     rcv_mod.PROCEDURES_DIR = procs_dir
     rcv_mod.CANDIDATES_DIR = cands_dir
+    rcv_mod.PROCEDURES_INDEX_PATH = procs_dir / "_index.md"
     reg_mod.FEATURES_CSV_PATH = csv_path
     ret_mod.PROCEDURES_DIR = procs_dir
+    emb_mod.PROCEDURES_DIR = procs_dir
     try:
         yield tmp_path, csv_path, procs_dir, cands_dir
     finally:
         (
             rcv_mod.PROCEDURES_DIR,
             rcv_mod.CANDIDATES_DIR,
+            rcv_mod.PROCEDURES_INDEX_PATH,
             reg_mod.FEATURES_CSV_PATH,
             ret_mod.PROCEDURES_DIR,
+            emb_mod.PROCEDURES_DIR,
         ) = original
 
 
@@ -127,19 +140,43 @@ def src_dir(tmp_path: Path) -> Path:
     return out
 
 
-@pytest.fixture
-def fake_scorer(monkeypatch):
-    """Patch the receiver's ``ascore`` import to return canned scores.
+@pytest.fixture(autouse=True)
+def fake_encoder(monkeypatch):
+    """Patch :func:`embeddings.encode` so tests never load BGE/torch.
 
-    Returns a list that the test can mutate to control which scores are
-    returned on each call (FIFO; if exhausted, the last entry is reused).
+    Returns a deterministic-but-distinct vector per input string by
+    hashing it into 8-d float32. That's enough for the persistence
+    contract tests (shape, file present, distinct rows) and avoids
+    the multi-second SentenceTransformer download.
     """
-    queue: list[dict[str, int]] = [fake_scores(0)]
+    def _fake_encode(lines):
+        if not lines:
+            return np.zeros((0, 0), dtype=np.float32)
+        out = np.zeros((len(lines), 8), dtype=np.float32)
+        for i, line in enumerate(lines):
+            seed = abs(hash(line)) % (2**31)
+            rng = np.random.default_rng(seed)
+            v = rng.standard_normal(8).astype(np.float32)
+            n = float(np.linalg.norm(v))
+            if n > 0:
+                v /= n
+            out[i] = v
+        return out
 
-    async def _fake_score(readme_text: str, sql_text: str) -> dict[str, int]:
-        if not queue:
-            raise RuntimeError("fake_scorer queue is empty")
-        return queue[0] if len(queue) == 1 else queue.pop(0)
+    monkeypatch.setattr(emb_mod, "encode", _fake_encode)
+    yield
 
-    monkeypatch.setattr(rcv_mod, "ascore", _fake_score)
-    return queue
+
+@pytest.fixture(autouse=True)
+def stub_keyword_matrix(monkeypatch):
+    """No-op the receiver's keyword-matrix rebuild in tests.
+
+    The rebuild walks the bank for SQL/README content; tests use minimal
+    stub bundles where a real rebuild produces an empty matrix anyway.
+    Keeping it stubbed isolates merge tests from the script-loading path.
+    """
+    monkeypatch.setattr(
+        rcv_mod.AnalysisBankReceiver, "_rebuild_keyword_matrix",
+        staticmethod(lambda: None),
+    )
+    yield

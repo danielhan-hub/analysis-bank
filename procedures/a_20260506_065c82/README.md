@@ -15,10 +15,34 @@ compound past the click month (delivery lag, repeat purchase, basket
 expansion). Setting `v_cohort_month_end = v_chart_end` collapses it to
 a vanilla all-clickers cumulative ROAS over the window.
 
-## Question Themes
+## When to use (chart-pattern reuse)
+
+The chart contract is a **bar+line cumulative-ROAS combo over a time
+axis** for a fixed user cohort: positive bars = cumulative attributed
+sales, negative bars = cumulative spend, line overlay = cumulative
+ROAS. Reuse this procedure for any question whose answer takes that
+visual form, even if the cohort source or time axis differs from the
+canonical "SP clicker × calendar month" version. Two clean swap points:
+
+1. **Cohort CTE** — the procedure's `clickers` CTE (users with billable
+   clicks on the target campaigns in the cohort window) is the swap
+   point. Replace it with an NTB-via-SP cohort, an NTB-via-any-ad
+   cohort, a promo-redeemer cohort, or any other cohort definition
+   whose first-touch event lands in the cohort window. The downstream
+   SQL (sales aggregation, spend aggregation, cumulative running sums)
+   doesn't change — it just sees a different `user_id` set.
+2. **Time-axis expression** — the canonical version buckets by
+   `DATE_TRUNC('month', delivered_date_pt)` (calendar month). Swap to
+   `DATEDIFF('month', cohort_acquisition_date, delivered_date_pt)` to
+   get **months-since-acquisition** instead. The output table schema
+   (cohort × month-bucket × {cum_sales, cum_spend, cum_roas}) is fixed
+   and `chart.py` renders both axes identically — only the x-axis
+   label changes.
+
+Concrete reuse targets:
 
 - "If we look only at our January SP clickers, what's their cumulative
-  ROAS by month through April?"
+  ROAS by month through April?" — canonical, no swaps.
 - "How much of a campaign's eventual ROAS lands after the click month?"
 - "Does the cohort that clicked during the launch window keep coming back
   on subsequent months?"
@@ -26,6 +50,12 @@ a vanilla all-clickers cumulative ROAS over the window.
   current quarter?"
 - "How does cumulative ROAS for [campaign set] shape up — running
   stronger or weaker than a 1.0x payback line?"
+- "For NTB customers acquired via SP, how does cumulative attributed
+  ROAS evolve as the cohort matures over months-since-acquisition?" —
+  swap clicker CTE → NTB-via-SP CTE; swap calendar-month bucket →
+  months-since-acquisition.
+- "Cohort-maturity ROAS curve for an ad-acquired NTB cohort over 12+
+  months since acquisition" — same two swaps.
 - "Across a multi-campaign national portfolio, what's the combined
   cumulative ROAS picture?"
 

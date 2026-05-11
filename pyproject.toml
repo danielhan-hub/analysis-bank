@@ -1,11 +1,19 @@
 [project]
 name = "analysis_bank"
-version = "0.1.0"
+version = "0.3.0"
 description = "Reusable stored procedure library for Ads MS analysis"
 requires-python = ">=3.10"
 dependencies = [
     "claude-agent-sdk>=0.1.0",
     "snowflake-cli>=3.0.0",
+    # Hybrid retrieval: BGE encoder (Stage A) + cross-encoder rerank (Stage C).
+    # Embeddings are computed at intake and persisted to disk so retrieval
+    # never has a cold-load hit. PyTorch is the heaviest transitive dep but
+    # the bank cannot do its job without semantic recall — no longer optional.
+    "sentence-transformers>=2.7,<4.0",
+    "torch>=2.1",
+    "numpy>=1.24",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -25,5 +33,5 @@ exclude = ["tests*"]
 [tool.setuptools.package-data]
 "analysis_bank" = [
     "prompts/**/*.md",
-    "features/feature_dict.md",
+    "features/keywords.yaml",
 ]

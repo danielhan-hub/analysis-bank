@@ -47,8 +47,11 @@ USE WAREHOUSE DEVELOPER_XL_WH;
 --   * Forward window is fully observable: callers must ensure
 --     v_cohort_window_end + v_forward_window_days <= today, otherwise
 --     late-cohort users have truncated observation.
---   * Country scope is enforced via dim_warehouse.country_id (US = 840,
---     CA = 124).
+--   * Country scope is enforced via agg_ma_order_item_daily_v2.country_id
+--     directly (US = 840, CA = 124). dim_warehouse is intentionally NOT
+--     joined: it has many warehouses per partner_id and would multiply
+--     fact rows without SELECT DISTINCT — see ~/.claude/docs/data_dict
+--     dim_warehouse gotchas.
 --
 -- SAMPLE CALL:
 -- CALL SANDBOX_DB.DANIELHAN.promo_cohort_brand_repeat_by_segment(
@@ -129,9 +132,10 @@ DECLARE
         -- 4) NTB/NTC flags per cohort user.
         --    Pull NTX flags for brand items on each user's cohort order,
         --    aggregated to user grain. Inner subquery restricts NTX rows to
-        --    brand items only via INNER JOINs to agg_ma_order_item_daily_v2
-        --    (delivered_entity_brand_id filter) and dim_warehouse
-        --    (country_id filter). Outer LEFT JOIN ensures users with no
+        --    brand items only via INNER JOIN to agg_ma_order_item_daily_v2
+        --    (delivered_entity_brand_id + country_id filters - both
+        --    columns live on agg_ma_order_item_daily_v2). Outer LEFT JOIN
+        --    ensures users with no
         --    matching brand NTX rows default to f_ntb=0, f_ntc=0
         --    (treated as Existing Users - conservative assumption).
         --
@@ -158,11 +162,9 @@ DECLARE
                     ON  v2.user_id::VARCHAR       = ntx.user_id::VARCHAR
                     AND v2.order_id::VARCHAR      = ntx.order_id::VARCHAR
                     AND v2.order_item_id::VARCHAR = ntx.order_item_id::VARCHAR
-                INNER JOIN instadata.dwh.dim_warehouse w
-                    ON v2.partner_id = w.partner_id
                 WHERE 1 = 1
                   AND v2.delivered_entity_brand_id   = :v_entity_brand_id
-                  AND w.country_id                   = :v_country_id
+                  AND v2.country_id                  = :v_country_id
                   AND ntx.order_item_created_date_pt BETWEEN :v_cohort_window_start AND :v_cohort_window_end
                   AND v2.delivered_date_pt           BETWEEN :v_cohort_window_start AND :v_cohort_window_end
             ) brand_ntx
@@ -189,8 +191,9 @@ DECLARE
 
         -- ====================================================================
         -- 6) Forward-window brand purchases per cohort user, carrying segment.
-        --    Anti-join on cohort_order_id (not on date). Country scope via
-        --    dim_warehouse.
+        --    Anti-join on cohort_order_id (not on date). Country scope
+        --    via agg_ma_order_item_daily_v2.country_id (no dim_warehouse
+        --    join needed).
         -- ====================================================================
         forward_brand_purchases AS (
             SELECT
@@ -203,11 +206,9 @@ DECLARE
             FROM cohort_labeled c
             INNER JOIN instadata.etl.agg_ma_order_item_daily_v2 o
                 ON o.user_id = c.user_id
-            INNER JOIN instadata.dwh.dim_warehouse w
-                ON o.partner_id = w.partner_id
             WHERE 1 = 1
               AND o.delivered_entity_brand_id = :v_entity_brand_id
-              AND w.country_id                = :v_country_id
+              AND o.country_id                = :v_country_id
               AND o.order_id                 != c.cohort_order_id
               AND o.delivered_date_pt        >= c.cohort_date
               AND o.delivered_date_pt        <= DATEADD(day, :v_forward_window_days, c.cohort_date)

@@ -1,0 +1,17 @@
+{
+  "summary": "Cumulative ROAS over time for a fixed user cohort — bar+line combo of cumulative sales (positive bars), cumulative spend (negative bars), and cumulative ROAS (line overlay) by month. Chart contract is preserved across cohort definitions (clicker, NTB-via-SP, NTB-via-ad, promo redeemer) and time axes (calendar months OR months-since-acquisition); the cohort CTE and the time-bucket expression are the swap points, the output table schema (cohort × month × {cum_sales, cum_spend, cum_roas}) is fixed.",
+  "questions": [
+    "Monthly cumulative SP ROAS for a fixed clicker cohort across the chart window — bar+line combo with cumulative sales, cumulative spend, and cumulative ROAS overlay.",
+    "If we look only at January SP clickers, what's their cumulative ROAS by month through April?",
+    "How much of a SP campaign's eventual ROAS lands after the click month — what does the cumulative ROAS trajectory look like?",
+    "What is the monthly cumulative SP ROAS shape for this brand's national portfolio across the current quarter?",
+    "Across a multi-campaign SP set, plot cumulative sales, cumulative spend, and cumulative ROAS by month for a fixed clicker cohort.",
+    "Does the cohort that clicked SP during the launch window keep coming back in subsequent months — what's the cumulative payback line?",
+    "Cumulative SP ROAS combo chart: cumulative sales as positive bars, cumulative spend as negative bars, cumulative ROAS as a line overlay across months.",
+    "Monthly cumulative ROAS for a SP campaign set — show how returns compound past the click month for a fixed clicker cohort.",
+    "For NTB customers acquired via SP, how does cumulative attributed ROAS evolve as the cohort matures over months-since-acquisition? Plot cumulative sales, cumulative spend, and cumulative ROAS by month from acquisition out 12+ months.",
+    "Cumulative attributed ROAS by months-since-acquisition for an SP-acquired NTB cohort — same bar+line combo, but the time axis is m0/m1/m2/… instead of calendar months.",
+    "Cohort-maturity ROAS curve: for ads-acquired buyers, plot cumulative spend vs. cumulative attributed brand sales and the rolling cumulative ROAS line as the cohort ages month by month.",
+    "Per-customer cumulative brand sales and cumulative ROAS for an ad-acquired cohort over months since acquisition — same combo chart, NTB cohort instead of clicker cohort."
+  ]
+}

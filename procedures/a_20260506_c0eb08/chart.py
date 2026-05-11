@@ -238,14 +238,14 @@ def render_chart(
         f"{int(v_country_id)}"
         ")"
     )
-    rows = iq.query(
-        "snowflake",
-        sql=sql,
-        result_type=list,
-        conn_params={"warehouse": warehouse},
-    ) or []
-    df = pd.DataFrame(rows)
-    df.columns = [c.upper() for c in df.columns]
+    conn = iq.get_conn("snowflake", conn_params={"warehouse": warehouse})
+    try:
+        cur = conn.cursor()
+        cur.execute(sql)
+        columns = [d[0].upper() for d in cur.description]
+        df = pd.DataFrame(cur.fetchall(), columns=columns)
+    finally:
+        conn.close()
 
     # Ensure numeric coercion (CALL/JSON path may return Decimal).
     for col in ("WEEKS_SINCE_CONVERSION", "COHORT_SIZE",

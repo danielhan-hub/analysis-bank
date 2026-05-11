@@ -64,10 +64,12 @@ redemption order itself (anti-join on `order_id`, not on `delivered_date_pt`
    joining `ads.ads_dwh.unified_order_item_ntx` to
    `instadata.etl.agg_ma_order_item_daily_v2` (filtered to
    `delivered_entity_brand_id = v_entity_brand_id` and
-   `country_id = v_country_id` via `dim_warehouse`). Aggregate to user
-   grain via `MAX(IFF(...))` so any TRUE on any brand item flips the
-   user. LEFT JOIN ensures no-NTX-row users default to `f_ntb=0,
-   f_ntc=0` (Existing Users).
+   `country_id = v_country_id` — `country_id` is read directly off
+   `agg_ma_order_item_daily_v2`; `dim_warehouse` is intentionally NOT
+   joined because it would multiply rows without `SELECT DISTINCT`).
+   Aggregate to user grain via `MAX(IFF(...))` so any TRUE on any
+   brand item flips the user. LEFT JOIN ensures no-NTX-row users
+   default to `f_ntb=0, f_ntc=0` (Existing Users).
 5. Label each cohort user's segment per the table above.
 6. Pull **forward-window brand purchases** for each cohort user from
    `agg_ma_order_item_daily_v2`: any brand order on
@@ -91,8 +93,7 @@ redemption order itself (anti-join on `order_id`, not on `delivered_date_pt`
 | `instadata.rds_ads.nexus_coupons` | Resolves `campaign_id` UUIDs → `discount_policy_id`. |
 | `ads.ads_dwh.fact_spend_promotion_redemption` | Cohort-defining promo redemption events. |
 | `ads.ads_dwh.unified_order_item_ntx` | NTB / NTC flags per user-order-item. |
-| `instadata.etl.agg_ma_order_item_daily_v2` | Brand-item filter for NTX scoping AND forward-window brand purchase tracking. |
-| `instadata.dwh.dim_warehouse` | Country scope (US = 840, CA = 124) via `partner_id → country_id`. |
+| `instadata.etl.agg_ma_order_item_daily_v2` | Brand-item filter for NTX scoping AND forward-window brand purchase tracking. Also the source of `country_id` (US = 840, CA = 124) — no `dim_warehouse` join needed. |
 
 ## Parameters
 

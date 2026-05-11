@@ -20,18 +20,25 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import inspect
+import json
 import logging
 import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from analysis_bank.features import ascore, upsert_row
 from analysis_bank._async import run_sync
+from analysis_bank.features import (
+    compute_and_persist,
+    reset_caches as reset_retrieval_caches,
+    upsert_chart_eligible,
+)
 from analysis_bank.paths import (
     CANDIDATES_DIR,
+    FEATURES_CSV_PATH,
     INSPECTOR_PROMPT_PATH,
     PROCEDURES_DIR,
+    PROCEDURES_INDEX_PATH,
 )
 from analysis_bank.smoke import SmokeTestError, smoke_test_procedure
 
@@ -255,40 +262,24 @@ class AnalysisBankReceiver:
 
     @staticmethod
     async def _merge_accepted(candidate_dir: Path) -> Path:
-        """Score the candidate and copy it into procedures/ (ACCEPT path).
+        """Promote a candidate into procedures/ (ACCEPT path).
 
         Run after the inspector returns ACCEPT. Steps:
-          1. 5-jury score procedure.sql + README.md
-          2. Copy the folder into procedures/<analysis_id>/
-          3. Upsert the row into analysis_features.csv
-          4. Remove the folder from candidates/
+          1. Copy the folder into procedures/<analysis_id>/
+          2. Persist BGE embeddings (questions.json → embeddings.npy)
+          3. Rebuild keyword_matrix.csv so Stage B picks the new rows up
+          4. Upsert chart_eligible into analysis_features.csv
+          5. Update procedures/_index.md
+          6. Drop retrieval's in-process cache so the new procedure is
+             visible without a process restart
+          7. Remove the folder from candidates/
 
-        Returns the destination path under procedures/.
-
-        Raises:
-            RuntimeError: If scoring fails. Candidate is left in candidates/
-                so the operator can re-run evaluate() or score manually.
-
-        Ordering note: copytree runs before upsert_row so a copytree failure
-        cannot leave an orphaned CSV row pointing at a nonexistent procedure
-        folder. If upsert_row fails, the procedure folder exists but is
-        invisible to retrieval — recoverable by re-running evaluate()
-        against the (still-present) candidate, or by manual scoring.
+        Ordering note: copytree runs before any side-effect writes so a
+        copytree failure cannot leave orphaned rows pointing at a
+        nonexistent procedure folder. Embedding + keyword work happens
+        on the *promoted* path, not the candidate path, so re-runs
+        against the same candidate produce identical artifacts.
         """
-        proc_sql = candidate_dir / "procedure.sql"
-        readme = candidate_dir / "README.md"
-        try:
-            scores = await ascore(
-                readme.read_text(encoding="utf-8"),
-                proc_sql.read_text(encoding="utf-8"),
-            )
-        except Exception as e:
-            raise RuntimeError(
-                f"Inspector ACCEPTed {candidate_dir.name} but scoring failed: "
-                f"{type(e).__name__}: {e}. Candidate left in candidates/ — "
-                f"either rerun evaluate() or score manually."
-            ) from e
-
         PROCEDURES_DIR.mkdir(parents=True, exist_ok=True)
         proc_dst = PROCEDURES_DIR / candidate_dir.name
         if proc_dst.exists():
@@ -296,11 +287,66 @@ class AnalysisBankReceiver:
             logger.info("Removed existing %s (overwrite)", proc_dst)
         shutil.copytree(candidate_dir, proc_dst)
 
-        upsert_row(candidate_dir.name, scores)
+        try:
+            compute_and_persist(proc_dst)
+        except (FileNotFoundError, ValueError) as e:
+            raise RuntimeError(
+                f"Promoted {candidate_dir.name} but failed to persist "
+                f"embeddings: {e}. The procedure is visible on disk but "
+                f"invisible to dense retrieval — fix questions.json and "
+                f"re-run analysis_bank.features.compute_and_persist()."
+            ) from e
 
+        AnalysisBankReceiver._rebuild_keyword_matrix()
+
+        chart_eligible = (proc_dst / "chart.py").exists()
+        upsert_chart_eligible(candidate_dir.name, chart_eligible)
+
+        questions_data = json.loads(
+            (proc_dst / "questions.json").read_text(encoding="utf-8")
+        )
+        AnalysisBankReceiver._update_procedures_index(
+            candidate_dir.name,
+            summary=questions_data.get("summary", "").strip(),
+            chart_eligible=chart_eligible,
+        )
+
+        reset_retrieval_caches()
         shutil.rmtree(candidate_dir)
         print(f"ACCEPTED AND MERGED: {candidate_dir.name} -> {proc_dst}")
         return proc_dst
+
+    @staticmethod
+    def _rebuild_keyword_matrix() -> None:
+        """Regenerate keyword_matrix.csv from the current procedures/.
+
+        Imported lazily because the build script lives in scripts/, not
+        in the package. We re-run it on every merge so Stage B never
+        falls behind the bank — keyword_matrix.csv is otherwise easy to
+        forget after a curated keywords.yaml edit.
+        """
+        from analysis_bank.features.keyword_index import (
+            DEFAULT_KEYWORDS_PATH,
+            DEFAULT_MATRIX_PATH,
+        )
+        # The builder script imports this module's helpers; importing it
+        # under a private alias keeps it usable here without touching
+        # sys.path the way the CLI entrypoint does.
+        import importlib.util
+        from analysis_bank.paths import REPO_ROOT
+        script_path = REPO_ROOT / "scripts" / "build_keyword_matrix.py"
+        spec = importlib.util.spec_from_file_location(
+            "_build_keyword_matrix", script_path
+        )
+        if spec is None or spec.loader is None:
+            logger.warning("Could not locate %s; skipping matrix rebuild", script_path)
+            return
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        n_rows, n_cats = module.build_matrix(
+            PROCEDURES_DIR, DEFAULT_KEYWORDS_PATH, DEFAULT_MATRIX_PATH
+        )
+        logger.info("Rebuilt keyword_matrix.csv (%d rows × %d cats)", n_rows, n_cats)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -327,15 +373,20 @@ class AnalysisBankReceiver:
 
     @staticmethod
     def _require_candidate_files(candidate_dir: Path) -> None:
-        """Fail fast if the candidate is missing procedure.sql or README.md.
+        """Fail fast if the candidate is missing procedure.sql, README.md, or
+        the chart contract.
 
-        Validates `chart.py` if present (optional — bundles without a
-        chart notebook simply omit it):
-          - Smoke-import to surface syntax errors before the LLM judges it.
-          - Confirm a callable named `render_chart` (or any function with
-            at least one required positional arg) exists.
-          - Sweep for hardcoded entity / account IDs — same regex used on
-            procedure.sql.
+        Chart contract — exactly one of:
+          (a) chart.py AND chart_1.png (the rendered output of chart.py on
+              the procedure's SAMPLE CALL); chart.py is then validated for
+              signature, hardcoded-id, csv-read, and __main__ guard.
+          (b) chart_skipped.md — a written rationale for why no chart applies
+              (single scalar, narrative-only output, etc.).
+
+        Either path makes downstream chart fidelity tractable: (a) gives the
+        visualization_creator a callable to render_chart(**kwargs); (b) gives
+        it explicit permission to skip without inventing a fresh chart from
+        SQL (the failure mode the bank is being rearchitected to prevent).
         """
         for name in ("procedure.sql", "README.md"):
             if not (candidate_dir / name).exists():
@@ -345,9 +396,117 @@ class AnalysisBankReceiver:
                     f"procedure.sql and README.md at the top of the analysis_id "
                     f"folder."
                 )
+
+        AnalysisBankReceiver._validate_questions_json(candidate_dir)
+
         chart_py = candidate_dir / "chart.py"
-        if chart_py.exists():
-            AnalysisBankReceiver._validate_chart_py(chart_py)
+        chart_png = candidate_dir / "chart_1.png"
+        chart_skipped = candidate_dir / "chart_skipped.md"
+
+        if chart_skipped.exists():
+            rationale = chart_skipped.read_text(encoding="utf-8").strip()
+            if len(rationale) < 10:
+                raise ValueError(
+                    f"chart_skipped.md in {candidate_dir.name} is empty or "
+                    f"trivially short. Write a one-line rationale explaining "
+                    f"why no chart applies (e.g., 'single scalar — no "
+                    f"chart needed', 'narrative output — no plottable "
+                    f"structure')."
+                )
+            return
+
+        if not chart_py.exists():
+            raise FileNotFoundError(
+                f"Candidate {candidate_dir.name} has no chart contract: "
+                f"missing both chart.py and chart_skipped.md. The bank gate "
+                f"requires either (chart.py + chart_1.png) or a "
+                f"chart_skipped.md rationale — see receiver._require_candidate_files."
+            )
+        if not chart_png.exists():
+            raise FileNotFoundError(
+                f"Candidate {candidate_dir.name} has chart.py but no "
+                f"chart_1.png. The promotion broker must execute chart.py "
+                f"on the procedure's SAMPLE CALL output and ship the rendered "
+                f"PNG so the chart contract can be verified visually before "
+                f"merge. If a chart genuinely doesn't apply, write "
+                f"chart_skipped.md instead."
+            )
+        AnalysisBankReceiver._validate_chart_py(chart_py)
+
+    @staticmethod
+    def _validate_questions_json(candidate_dir: Path) -> None:
+        """Require a well-formed questions.json — the dense retrieval encoder
+        embeds these paraphrases at runtime, and the receiver writes the
+        summary into procedures/_index.md on merge. A procedure without
+        questions.json is invisible to Stage A recall.
+        """
+        path = candidate_dir / "questions.json"
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Candidate {candidate_dir.name} is missing questions.json. "
+                f"The promotion broker must emit {{summary, questions: [..]}} "
+                f"with 8 paraphrases — see Step 3 of promotion_broker.md. "
+                f"Without it, dense retrieval has no embedding surface for "
+                f"this procedure."
+            )
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                f"questions.json in {candidate_dir.name} is not valid JSON: {e}"
+            ) from e
+        summary = (data.get("summary") or "").strip()
+        questions = data.get("questions") or []
+        if not summary:
+            raise ValueError(
+                f"questions.json in {candidate_dir.name} has no `summary`. "
+                f"This is the 1-line headline that lands in _index.md."
+            )
+        if not isinstance(questions, list) or len(questions) < 4:
+            raise ValueError(
+                f"questions.json in {candidate_dir.name} needs at least 4 "
+                f"paraphrases under `questions` (got {len(questions)}). "
+                f"Eight is the target — fewer than four leaves dense recall "
+                f"with too sparse a signal."
+            )
+        if any(not isinstance(q, str) or not q.strip() for q in questions):
+            raise ValueError(
+                f"questions.json in {candidate_dir.name} contains empty or "
+                f"non-string entries in `questions`."
+            )
+
+    @staticmethod
+    def _update_procedures_index(
+        analysis_id: str, *, summary: str, chart_eligible: bool
+    ) -> None:
+        """Upsert one row into procedures/_index.md. Idempotent.
+
+        The index is a plain Markdown table — `id | summary | chart_eligible`.
+        Hand-maintained today; auto-maintained going forward so it stops
+        rotting whenever a procedure is promoted.
+        """
+        header = "| analysis_id | summary | chart_eligible |\n|---|---|---|\n"
+        clean_summary = " ".join(summary.split())  # collapse whitespace
+        new_row = f"| {analysis_id} | {clean_summary} | {str(chart_eligible).lower()} |\n"
+
+        if not PROCEDURES_INDEX_PATH.exists():
+            PROCEDURES_INDEX_PATH.write_text(header + new_row, encoding="utf-8")
+            return
+
+        text = PROCEDURES_INDEX_PATH.read_text(encoding="utf-8")
+        lines = text.splitlines(keepends=True)
+        # Drop any existing row for this analysis_id (upsert)
+        kept = [ln for ln in lines if not ln.lstrip().startswith(f"| {analysis_id} |")]
+        # Ensure header present
+        if not any(ln.lstrip().startswith("| analysis_id ") for ln in kept):
+            kept = [header.splitlines(keepends=True)[0],
+                    header.splitlines(keepends=True)[1]] + kept
+        # Append new row, sort body rows alphabetically by id for stable diffs
+        head = kept[:2]
+        body = [ln for ln in kept[2:] if ln.strip().startswith("|")]
+        body.append(new_row)
+        body.sort()
+        PROCEDURES_INDEX_PATH.write_text("".join(head + body), encoding="utf-8")
 
     @staticmethod
     def _validate_chart_py(chart_py: Path) -> None:
