@@ -1,0 +1,13 @@
+{
+  "summary": "Promotion-redeemer cohort cumulative brand repeat by 3-segment split (NTC / Prev. Competitor Only / Existing Users) over a forward observation window.",
+  "questions": [
+    "Promo-redeemer cohort cumulative brand repeat rate and sales by NTC / Prev. Competitor Only / Existing Users segment over 12 weeks at 2-week buckets — bar+line twin-axes chart.",
+    "Of users we acquired with the SUAS / Free Gift / BOGO push, how quickly do they come back to the brand on their own?",
+    "How does the 12-week brand-repeat trajectory differ for net-new (NTC) vs competitor-switch vs existing customers we re-engaged?",
+    "How much downstream brand revenue do we book in the 84 days after a promo redemption, and how is it distributed across the three acquisition segments?",
+    "At what week does the NTB cohort's repeat curve plateau vs. continue climbing after a promo redemption?",
+    "Is the existing-users repeat rate (cannibalization read) close to baseline, or did the promo materially shift their cadence?",
+    "Cumulative brand repeat (rate + sales) by acquisition segment for a cohort defined by first promo redemption in a window.",
+    "Promo cohort post-redemption brand repeat ramp: bars = cumulative repeat rate %, line = cumulative repeat sales $, twin-axes per 2-week bucket through week 12."
+  ]
+}

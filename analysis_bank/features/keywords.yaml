@@ -1,0 +1,179 @@
+# Keyword categories for hybrid retrieval (Stage B).
+#
+# Each category groups synonymous tokens that should pin a procedure to a
+# specific question shape — the kind of literal-string match that dense
+# encoders sometimes drift past.
+#
+# How to extend:
+#   1. Add a new category (snake_case key) with 3-10 surface forms.
+#   2. Run `python scripts/build_keyword_matrix.py` to refresh
+#      `keyword_matrix.csv` next to `analysis_features.csv`.
+#   3. Re-run the eval harness (tests/retrieval_eval/) to confirm
+#      recall@5 didn't regress.
+#
+# Token rules:
+#   - Lowercased substring matches (case-insensitive). Multi-word
+#     phrases match across whitespace.
+#   - Prefer hyphenated and unhyphenated variants ("cost-to-convert"
+#     and "cost to convert") to absorb writing styles.
+#   - Avoid bare metric names that appear in every procedure
+#     ("revenue", "users") — those wash out the signal.
+
+category_share:
+  - "category share"
+  - "share of category"
+  - "category penetration"
+  - "share of wallet"
+  - "share of category orders"
+
+cohort_decay:
+  - "cost-to-convert"
+  - "cost to convert"
+  - "cost per retained buyer"
+  - "cac decay"
+  - "cac payback"
+  - "tenure decay"
+  - "retention curve"
+  - "cohort decay"
+  - "cumulative roas"
+  - "cumulative attributed roas"
+  - "cumulative sp roas"
+  - "months-since-acquisition"
+  - "months since acquisition"
+  - "cohort matures"
+  - "cohort maturity"
+  - "payback curve"
+  - "payback line"
+  - "payback shape"
+  - "clicker cohort"
+  - "fixed cohort"
+  - "post-click month"
+  - "returns compound"
+
+ntb_repeat_rate:
+  - "repeat rate"
+  - "30-day repeat"
+  - "60-day repeat"
+  - "90-day repeat"
+  - "180-day repeat"
+  - "ntb repeat"
+  - "new-to-brand repeat"
+  - "first-time buyer repeat"
+  - "repeat-purchase rate"
+  - "repeat purchase rate"
+  - "brand repeat rate"
+  - "brand repeat sales"
+  - "cumulative repeat"
+  - "ntb cohort retention"
+  - "post-acquisition repeat"
+  - "post-acquisition ramp"
+  - "cohort retention curve"
+  - "ad-driven cohort"
+  - "ad-driven brand"
+  - "right-censoring"
+  - "cohort_month"
+  - "acquisition cohort month"
+  - "acquisition_quarter"
+  - "cohort quarter"
+
+brand_cohort_opportunity:
+  - "competitor loyalist"
+  - "brand loyalist"
+  - "switcher"
+  - "brand-biased switcher"
+  - "competitor-biased switcher"
+  - "addressable ntb pool"
+  - "brand cohort opportunity"
+  - "addressable pool"
+  - "addressable headroom"
+  - "addressable opportunity"
+  - "non-brand buyer"
+  - "non-brand category buyer"
+  - "category buyer pool"
+  - "category buyer universe"
+  - "buyer universe"
+  - "5-cohort"
+  - "5 cohort"
+  - "five-cohort"
+  - "100% stacked column"
+  - "100% stacked bar"
+  - "share of category orders"
+  - "brand-share-of-wallet"
+  - "brand share of wallet"
+  - "haven't bought our brand"
+  - "have not bought our brand"
+  - "not yet bought"
+  - "size the upside"
+
+incrementality_lift:
+  - "incremental lift"
+  - "incremental revenue"
+  - "iroas"
+  - "lift test"
+  - "test vs control"
+  - "ghost ad"
+
+promo_cohort_repeat:
+  - "promo cohort"
+  - "promotion cohort"
+  - "promo redemption"
+  - "promo-driven repeat"
+  - "post-promo repeat"
+  - "free gift"
+  - "coupon redemption"
+
+basket_affinity:
+  - "basket affinity"
+  - "basket z-score"
+  - "co-purchase"
+  - "product pair"
+  - "complement category"
+  - "basket shifting"
+
+budget_pacing:
+  - "budget pacing"
+  - "budget defense"
+  - "spend curve"
+  - "budget allocation"
+  - "spend ramp"
+
+suas:
+  - "suas"
+  - "shoppable display"
+  - "shoppable ads"
+  - "shoppable units"
+
+display_creative:
+  - "display creative"
+  - "creative variant"
+  - "banner creative"
+  - "homepage display"
+
+new_to_brand_acquisition:
+  - "new-to-brand"
+  - "ntb acquisition"
+  - "ntb conversion"
+  - "first-time brand buyer"
+  - "acquired buyer"
+
+retention_long_horizon:
+  - "ltv"
+  - "lifetime value"
+  - "long-horizon retention"
+  - "12-month retention"
+  - "annual retention"
+
+geo_canada:
+  - "canada"
+  - "canadian retailers"
+  - "country_id 124"
+  - "instacart canada"
+  - "loblaw"
+  - "sobeys"
+
+aa_fairness:
+  - "a/a test"
+  - "aa test"
+  - "fairness check"
+  - "placebo test"
+  - "negative control"

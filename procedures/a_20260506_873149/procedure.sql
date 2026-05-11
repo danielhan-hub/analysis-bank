@@ -3,12 +3,26 @@ USE SCHEMA SANDBOX_DB.DANIELHAN;
 USE WAREHOUSE DEVELOPER_XL_WH;
 
 ----------------------------------------------------------------------------
--- Procedure: SANDBOX_DB.DANIELHAN.promo_cohort_brand_repeat_by_segment
+-- Procedure: SANDBOX_DB.DANIELHAN.ad_driven_cohort_brand_repeat_by_segment
 --
--- Purpose: For users whose FIRST redemption of a target promo (e.g., SUAS,
---   Free Gift, BOGO) lands in a cohort window, track cumulative brand
---   repeat behavior over a configurable forward observation window,
---   bucketed at a configurable cadence (default 12 weeks / 2-week buckets).
+-- Purpose: For users whose FIRST ad-driven brand purchase falls in a cohort
+--   window, track cumulative brand repeat behavior over a configurable
+--   forward observation window, bucketed at a configurable cadence
+--   (default 12 weeks / 2-week buckets).
+--
+--   "Ad-driven" is the UNION of two configurable cohort sources:
+--     (A) SP + Display attribution: rows in
+--         ads.ads_dwh.multi_touch_click_prioritized_ads_attributions whose
+--         joined order_item lands on the target brand. Toggled by
+--         v_include_sp_display_attribution (default TRUE).
+--     (B) SUAS (Spend & Save) redemption: VALID rows in
+--         ads.ads_dwh.fact_spend_promotion_redemption against any of the
+--         caller-supplied campaign_id UUIDs (resolved inline to
+--         discount_policy_ids via nexus_coupons). Toggled by
+--         v_include_suas_redemption (default TRUE).
+--   Setting one flag FALSE narrows the cohort to the other source only;
+--   both TRUE matches the q2b "any-ad-product" definition.
+--
 --   Cohort users are split into three mutually exclusive segments by their
 --   NTX flags on the cohort-defining order's brand items:
 --     - 'NTC'                     : NTB AND NTC on a brand item of the
@@ -22,6 +36,16 @@ USE WAREHOUSE DEVELOPER_XL_WH;
 --   NTB = NTC + Prev. Competitor Only (derive at viz time by summation;
 --   not emitted separately).
 --
+--   The NTX lookback window is selected via v_ntx_lookback_days in
+--   {182, 365}; this controls whether new_to_brand_182_day /
+--   new_to_category_182_day or new_to_brand_365_day /
+--   new_to_category_365_day columns are read from
+--   unified_order_item_ntx. Default is 182 (q2b convention).
+--
+--   v_include_existing_users (default TRUE) controls whether the
+--   Existing Users segment is emitted. Set FALSE to restrict the output
+--   to NTB-only segments (q2b convention).
+--
 --   Two metrics per (segment, bucket), both cumulative through end-of-bucket:
 --     - brand_repeat_rate_pct    = (cohort users in segment with >=1 brand
 --                                   order in days 0..bucket_end_day) /
@@ -31,12 +55,14 @@ USE WAREHOUSE DEVELOPER_XL_WH;
 --                                   0..bucket_end_day
 --
 --   "Repeat" = ANY brand order (promo or not) EXCEPT the cohort-defining
---   redemption order itself (anti-join on order_id, not on date - a
---   same-day separate brand order still counts as a repeat).
+--   order itself (anti-join on order_id, not on date - a same-day separate
+--   brand order still counts as a repeat).
 --
 -- Output shape: one row per (segment, bucket). With defaults
---   (v_forward_window_days=84, v_bucket_size_days=14) -> 18 rows
+--   (v_forward_window_days=84, v_bucket_size_days=14,
+--   v_include_existing_users=TRUE) -> 18 rows
 --   (3 segments x 6 week-end buckets at weeks 2, 4, 6, 8, 10, 12).
+--   With v_include_existing_users=FALSE -> 12 rows (q2b shape).
 --
 -- Constraints:
 --   * v_forward_window_days SHOULD be a multiple of v_bucket_size_days;
@@ -44,35 +70,43 @@ USE WAREHOUSE DEVELOPER_XL_WH;
 --   * v_promo_campaign_ids is a comma-separated list of nexus_coupons
 --     campaign_id UUIDs (no spaces). The procedure resolves them inline
 --     to discount_policy_ids - no hardcoded discount_policy_id list.
+--     Pass an empty string ('') if v_include_suas_redemption=FALSE.
 --   * Forward window is fully observable: callers must ensure
 --     v_cohort_window_end + v_forward_window_days <= today, otherwise
 --     late-cohort users have truncated observation.
---   * Country scope is enforced via agg_ma_order_item_daily_v2.country_id
---     directly (US = 840, CA = 124). dim_warehouse is intentionally NOT
---     joined: it has many warehouses per partner_id and would multiply
---     fact rows without SELECT DISTINCT — see ~/.claude/docs/data_dict
---     dim_warehouse gotchas.
+--   * Country scope is enforced via dim_warehouse.country_id (US = 840,
+--     CA = 124).
+--   * v_ntx_lookback_days must be 182 or 365 (other values fall through
+--     and treat all cohort users as Existing).
 --
 -- SAMPLE CALL:
--- CALL SANDBOX_DB.DANIELHAN.promo_cohort_brand_repeat_by_segment(
+-- CALL SANDBOX_DB.DANIELHAN.ad_driven_cohort_brand_repeat_by_segment(
 --     '5ae514c3-332d-4668-b654-862d95cf755e,16998f0f-578d-411b-8021-eb278004f772,381681f9-6c43-4d5a-81d3-13495fec75de',
 --     564770,
---     '2025-08-05'::DATE,
---     '2025-10-11'::DATE,
+--     '2025-10-01'::DATE,
+--     '2025-12-31'::DATE,
 --     84,
 --     14,
---     840
+--     840,
+--     182,
+--     FALSE,
+--     TRUE,
+--     TRUE
 -- );
 ----------------------------------------------------------------------------
 
-CREATE OR REPLACE PROCEDURE SANDBOX_DB.DANIELHAN.promo_cohort_brand_repeat_by_segment(
-    v_promo_campaign_ids   STRING,
-    v_entity_brand_id      BIGINT,
-    v_cohort_window_start  DATE,
-    v_cohort_window_end    DATE,
-    v_forward_window_days  INTEGER  DEFAULT 84,
-    v_bucket_size_days     INTEGER  DEFAULT 14,
-    v_country_id           BIGINT   DEFAULT 840
+CREATE OR REPLACE PROCEDURE SANDBOX_DB.DANIELHAN.ad_driven_cohort_brand_repeat_by_segment(
+    v_promo_campaign_ids              STRING,
+    v_entity_brand_id                 BIGINT,
+    v_cohort_window_start             DATE,
+    v_cohort_window_end               DATE,
+    v_forward_window_days             INTEGER  DEFAULT 84,
+    v_bucket_size_days                INTEGER  DEFAULT 14,
+    v_country_id                      BIGINT   DEFAULT 840,
+    v_ntx_lookback_days               INTEGER  DEFAULT 182,
+    v_include_existing_users          BOOLEAN  DEFAULT TRUE,
+    v_include_sp_display_attribution  BOOLEAN  DEFAULT TRUE,
+    v_include_suas_redemption         BOOLEAN  DEFAULT TRUE
 )
 RETURNS TABLE(
     segment                       VARCHAR,
@@ -90,14 +124,17 @@ DECLARE
         WITH
         -- ====================================================================
         -- 1) Parse the input campaign-ID list (CSV of nexus_coupons UUIDs).
+        --    Empty input yields 0 rows -> SUAS leg returns nothing, which is
+        --    the intended behavior when v_include_suas_redemption=FALSE.
         -- ====================================================================
         promo_campaign_ids AS (
             SELECT TRIM(value)::VARCHAR AS campaign_id
             FROM TABLE(STRTOK_SPLIT_TO_TABLE(:v_promo_campaign_ids, ','))
+            WHERE NULLIF(TRIM(value), '') IS NOT NULL
         ),
 
         -- ====================================================================
-        -- 2) ID resolution: derive promo discount_policy_ids inline.
+        -- 2) ID resolution: derive SUAS discount_policy_ids inline.
         -- ====================================================================
         promo_discount_policies AS (
             SELECT DISTINCT
@@ -108,20 +145,75 @@ DECLARE
         ),
 
         -- ====================================================================
-        -- 3) Cohort: each user's FIRST promo-redemption order in the window.
-        --    One row per user. Tiebreaker: smallest order_id within the same
-        --    delivered date.
+        -- 3a) SP+Display ad-attributed brand orders in cohort window.
+        --     multi_touch_click_prioritized_ads_attributions covers SP +
+        --     Display only (SUAS not present). Attribution table user_id is
+        --     VARCHAR -- JOIN by order_id::VARCHAR + order_item_id::VARCHAR
+        --     to v2, and pull v2.user_id (NUMBER) so all downstream joins
+        --     use the v2 user_id consistently. Brand/country filter applied
+        --     via v2 + dim_warehouse. Gated by
+        --     v_include_sp_display_attribution.
+        -- ====================================================================
+        ad_attributed_orders AS (
+            SELECT DISTINCT
+                v2.user_id           AS user_id,
+                v2.order_id          AS order_id,
+                v2.delivered_date_pt AS delivered_date_pt
+            FROM ads.ads_dwh.multi_touch_click_prioritized_ads_attributions a
+            INNER JOIN instadata.etl.agg_ma_order_item_daily_v2 v2
+                ON  v2.order_id::VARCHAR      = a.order_id::VARCHAR
+                AND v2.order_item_id::VARCHAR = a.order_item_id::VARCHAR
+            INNER JOIN (SELECT DISTINCT partner_id, country_id FROM instadata.dwh.dim_warehouse) w
+                ON v2.partner_id = w.partner_id
+            WHERE 1 = 1
+              AND :v_include_sp_display_attribution = TRUE
+              AND v2.delivered_entity_brand_id = :v_entity_brand_id
+              AND w.country_id                 = :v_country_id
+              AND v2.delivered_date_pt         BETWEEN :v_cohort_window_start AND :v_cohort_window_end
+              AND a.attributable_event_date_time_pt::DATE BETWEEN
+                  DATEADD(day, -90, :v_cohort_window_start) AND :v_cohort_window_end
+              AND a.order_item_created_date_time_pt::DATE BETWEEN
+                  :v_cohort_window_start AND :v_cohort_window_end
+        ),
+
+        -- ====================================================================
+        -- 3b) SUAS-redemption brand orders in cohort window.
+        --     fact_spend_promotion_redemption already at user x order grain.
+        --     user_id matches v2.user_id (NUMBER). Gated by
+        --     v_include_suas_redemption.
+        -- ====================================================================
+        suas_redemption_orders AS (
+            SELECT
+                user_id,
+                order_id,
+                delivered_date_pt
+            FROM ads.ads_dwh.fact_spend_promotion_redemption
+            WHERE 1 = 1
+              AND :v_include_suas_redemption = TRUE
+              AND overall_status     = 'VALID'
+              AND delivered_date_pt  BETWEEN :v_cohort_window_start AND :v_cohort_window_end
+              AND discount_policy_id IN (SELECT discount_policy_id FROM promo_discount_policies)
+        ),
+
+        -- ====================================================================
+        -- 3c) UNION: all candidate ad-driven cohort orders in the window.
+        -- ====================================================================
+        candidate_orders AS (
+            SELECT user_id, order_id, delivered_date_pt FROM ad_attributed_orders
+            UNION
+            SELECT user_id, order_id, delivered_date_pt FROM suas_redemption_orders
+        ),
+
+        -- ====================================================================
+        -- 4) Cohort: each user's FIRST candidate ad-driven order in window.
+        --    Tiebreaker: smallest order_id within the same delivered date.
         -- ====================================================================
         cohort AS (
             SELECT
                 user_id,
                 order_id          AS cohort_order_id,
                 delivered_date_pt AS cohort_date
-            FROM ads.ads_dwh.fact_spend_promotion_redemption
-            WHERE 1 = 1
-              AND overall_status     = 'VALID'
-              AND delivered_date_pt  BETWEEN :v_cohort_window_start AND :v_cohort_window_end
-              AND discount_policy_id IN (SELECT discount_policy_id FROM promo_discount_policies)
+            FROM candidate_orders
             QUALIFY ROW_NUMBER() OVER (
                 PARTITION BY user_id
                 ORDER BY delivered_date_pt ASC, order_id ASC
@@ -129,18 +221,17 @@ DECLARE
         ),
 
         -- ====================================================================
-        -- 4) NTB/NTC flags per cohort user.
+        -- 5) NTB/NTC flags per cohort user.
         --    Pull NTX flags for brand items on each user's cohort order,
-        --    aggregated to user grain. Inner subquery restricts NTX rows to
-        --    brand items only via INNER JOIN to agg_ma_order_item_daily_v2
-        --    (delivered_entity_brand_id + country_id filters - both
-        --    columns live on agg_ma_order_item_daily_v2). Outer LEFT JOIN
-        --    ensures users with no
-        --    matching brand NTX rows default to f_ntb=0, f_ntc=0
-        --    (treated as Existing Users - conservative assumption).
+        --    aggregated to user grain. Inner subquery restricts NTX rows
+        --    to brand items only via INNER JOINs to v2 (entity_brand_id)
+        --    and dim_warehouse (country). Outer LEFT JOIN ensures users
+        --    with no matching brand NTX rows default to f_ntb=0, f_ntc=0
+        --    (treated as Existing Users -- conservative).
         --
-        --    ntx.user_id is VARCHAR (UUID); v2.user_id is NUMBER -- cast both
-        --    sides per dd_general gotcha. Partition filter on
+        --    NTX lookback (182 vs 365) is selected via :v_ntx_lookback_days.
+        --    ntx.user_id is VARCHAR (UUID); v2.user_id is NUMBER -- cast
+        --    both sides per dd_general gotcha. Partition filter on
         --    ntx.order_item_created_date_pt always included per dd gotcha.
         -- ====================================================================
         cohort_ntx AS (
@@ -148,13 +239,27 @@ DECLARE
                 cc.user_id,
                 cc.cohort_order_id,
                 cc.cohort_date,
-                COALESCE(MAX(IFF(brand_ntx.new_to_brand_365_day    = TRUE, 1, 0)), 0) AS f_ntb,
-                COALESCE(MAX(IFF(brand_ntx.new_to_category_365_day = TRUE, 1, 0)), 0) AS f_ntc
+                COALESCE(MAX(
+                    CASE
+                        WHEN :v_ntx_lookback_days = 182 THEN IFF(brand_ntx.new_to_brand_182_day = TRUE, 1, 0)
+                        WHEN :v_ntx_lookback_days = 365 THEN IFF(brand_ntx.new_to_brand_365_day = TRUE, 1, 0)
+                        ELSE 0
+                    END
+                ), 0) AS f_ntb,
+                COALESCE(MAX(
+                    CASE
+                        WHEN :v_ntx_lookback_days = 182 THEN IFF(brand_ntx.new_to_category_182_day = TRUE, 1, 0)
+                        WHEN :v_ntx_lookback_days = 365 THEN IFF(brand_ntx.new_to_category_365_day = TRUE, 1, 0)
+                        ELSE 0
+                    END
+                ), 0) AS f_ntc
             FROM cohort cc
             LEFT JOIN (
                 SELECT
                     ntx.user_id,
                     ntx.order_id,
+                    ntx.new_to_brand_182_day,
+                    ntx.new_to_category_182_day,
                     ntx.new_to_brand_365_day,
                     ntx.new_to_category_365_day
                 FROM ads.ads_dwh.unified_order_item_ntx ntx
@@ -162,9 +267,11 @@ DECLARE
                     ON  v2.user_id::VARCHAR       = ntx.user_id::VARCHAR
                     AND v2.order_id::VARCHAR      = ntx.order_id::VARCHAR
                     AND v2.order_item_id::VARCHAR = ntx.order_item_id::VARCHAR
+                INNER JOIN (SELECT DISTINCT partner_id, country_id FROM instadata.dwh.dim_warehouse) w
+                    ON v2.partner_id = w.partner_id
                 WHERE 1 = 1
                   AND v2.delivered_entity_brand_id   = :v_entity_brand_id
-                  AND v2.country_id                  = :v_country_id
+                  AND w.country_id                   = :v_country_id
                   AND ntx.order_item_created_date_pt BETWEEN :v_cohort_window_start AND :v_cohort_window_end
                   AND v2.delivered_date_pt           BETWEEN :v_cohort_window_start AND :v_cohort_window_end
             ) brand_ntx
@@ -174,7 +281,9 @@ DECLARE
         ),
 
         -- ====================================================================
-        -- 5) Segment label: NTC / Prev. Competitor Only / Existing Users.
+        -- 6) Segment label: NTC / Prev. Competitor Only / Existing Users.
+        --    Existing Users dropped here when v_include_existing_users=FALSE
+        --    (q2b NTB-only convention).
         -- ====================================================================
         cohort_labeled AS (
             SELECT
@@ -187,13 +296,14 @@ DECLARE
                     ELSE                               'Existing Users'
                 END AS segment
             FROM cohort_ntx
+            WHERE 1 = 1
+              AND (:v_include_existing_users = TRUE OR f_ntb = 1)
         ),
 
         -- ====================================================================
-        -- 6) Forward-window brand purchases per cohort user, carrying segment.
-        --    Anti-join on cohort_order_id (not on date). Country scope
-        --    via agg_ma_order_item_daily_v2.country_id (no dim_warehouse
-        --    join needed).
+        -- 7) Forward-window brand purchases per cohort user, carrying segment.
+        --    Anti-join on cohort_order_id (not on date). Country scope via
+        --    dim_warehouse.
         -- ====================================================================
         forward_brand_purchases AS (
             SELECT
@@ -206,9 +316,11 @@ DECLARE
             FROM cohort_labeled c
             INNER JOIN instadata.etl.agg_ma_order_item_daily_v2 o
                 ON o.user_id = c.user_id
+            INNER JOIN (SELECT DISTINCT partner_id, country_id FROM instadata.dwh.dim_warehouse) w
+                ON o.partner_id = w.partner_id
             WHERE 1 = 1
               AND o.delivered_entity_brand_id = :v_entity_brand_id
-              AND o.country_id                = :v_country_id
+              AND w.country_id                = :v_country_id
               AND o.order_id                 != c.cohort_order_id
               AND o.delivered_date_pt        >= c.cohort_date
               AND o.delivered_date_pt        <= DATEADD(day, :v_forward_window_days, c.cohort_date)
@@ -217,7 +329,7 @@ DECLARE
         ),
 
         -- ====================================================================
-        -- 7) Bucket assignment: ceil(days_since / bucket_size). Day 0 falls
+        -- 8) Bucket assignment: ceil(days_since / bucket_size). Day 0 falls
         --    into bucket 1 (cohort-day same-day separate brand orders count).
         -- ====================================================================
         forward_purchases_bucketed AS (
@@ -236,7 +348,7 @@ DECLARE
         ),
 
         -- ====================================================================
-        -- 8) Bucket grid (1..N) and per-segment cohort sizes.
+        -- 9) Bucket grid (1..N) and per-segment cohort sizes.
         --    Bucket end is reported as weeks_since_conversion (FLOAT) so
         --    sub-week buckets (e.g. 7d) and multi-week buckets (e.g. 14d, 30d)
         --    all render cleanly on the chart x-axis.
@@ -253,14 +365,18 @@ DECLARE
             WHERE (idx + 1) <= (:v_forward_window_days / :v_bucket_size_days)
         ),
 
-        -- Hardcode segment names so all 3 always appear, even if empty.
+        -- Hardcode segment names so all expected segments always appear,
+        -- even if empty. 'Existing Users' is conditionally included based
+        -- on v_include_existing_users.
+        segments AS (
+            SELECT 'NTC'                   AS segment
+            UNION ALL SELECT 'Prev. Competitor Only'
+            UNION ALL SELECT 'Existing Users' WHERE :v_include_existing_users = TRUE
+        ),
+
         segment_bucket_grid AS (
             SELECT s.segment, bg.bucket_id, bg.weeks_since_conversion
-            FROM (
-                SELECT 'NTC'                   AS segment UNION ALL
-                SELECT 'Prev. Competitor Only' AS segment UNION ALL
-                SELECT 'Existing Users'        AS segment
-            ) s
+            FROM segments s
             CROSS JOIN bucket_grid bg
         ),
 
@@ -271,15 +387,15 @@ DECLARE
         ),
 
         -- ====================================================================
-        -- 9) Cumulative aggregation: for each segment x bucket N, count
-        --    distinct cohort users with any qualifying purchase in buckets
-        --    <= N and sum their sales.
+        -- 10) Cumulative aggregation: for each segment x bucket N, count
+        --     distinct cohort users with any qualifying purchase in buckets
+        --     <= N and sum their sales.
         -- ====================================================================
         cumulative_per_bucket AS (
             SELECT
                 g.segment,
                 g.weeks_since_conversion,
-                COUNT(DISTINCT p.user_id)               AS n_repeaters_through_bucket,
+                COUNT(DISTINCT p.user_id)                  AS n_repeaters_through_bucket,
                 COALESCE(SUM(p.order_brand_sales_usd), 0)  AS sales_through_bucket_usd
             FROM segment_bucket_grid g
             LEFT JOIN forward_purchases_bucketed p
@@ -289,17 +405,17 @@ DECLARE
         )
 
         -- ====================================================================
-        -- 10) FINAL: 3 segments x N buckets.
+        -- 11) FINAL: emit one row per (segment, bucket).
         -- ====================================================================
         SELECT
             cpb.segment                                                         AS segment,
             cpb.weeks_since_conversion::FLOAT                                   AS weeks_since_conversion,
-            cs.n                                                                AS cohort_size,
+            COALESCE(cs.n, 0)                                                   AS cohort_size,
             cpb.n_repeaters_through_bucket                                      AS n_repeaters_through_bucket,
             DIV0(cpb.n_repeaters_through_bucket, cs.n)::FLOAT                   AS brand_repeat_rate_pct,
             cpb.sales_through_bucket_usd::FLOAT                                 AS brand_repeat_sales_usd
         FROM cumulative_per_bucket cpb
-        JOIN cohort_size_by_segment cs
+        LEFT JOIN cohort_size_by_segment cs
             ON cpb.segment = cs.segment
         ORDER BY
             CASE cpb.segment

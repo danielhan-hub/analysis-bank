@@ -1,178 +1,115 @@
-"""Tests for the features module: registry CSV + retrieval math.
-
-Scorer.py is not exercised here — it's a thin LLM driver and the contract
-(asyncio.gather → drop top+bottom → average middle) is too dependent on the
-agent's actual JSON output for unit-test value. Integration testing of the
-scorer is covered by the backfill verification step.
-"""
+"""Tests for the features module: registry + embedding persistence."""
 from __future__ import annotations
 
 import csv
-from pathlib import Path
 
+import numpy as np
 import pytest
 
-from analysis_bank import feature_columns
-from analysis_bank.features.registry import upsert_row, load_all
-from analysis_bank.features.retrieval import nearest
+from analysis_bank.features.embeddings import (
+    EMBEDDINGS_FILENAME,
+    compute_and_persist,
+    load_corpus,
+    load_procedure_vectors,
+)
+from analysis_bank.features.registry import (
+    load_chart_eligibility,
+    upsert_chart_eligible,
+)
 
-from .conftest import fake_scores
-
-
-# ---------------------------------------------------------------------------
-# feature_columns
-# ---------------------------------------------------------------------------
-
-
-def test_feature_columns_has_76():
-    assert len(feature_columns()) == 76
-
-
-def test_feature_columns_all_snake_case():
-    import re
-
-    pattern = re.compile(r"^[a-z][a-z0-9_]*$")
-    for c in feature_columns():
-        assert pattern.match(c), f"non-snake-case feature: {c}"
-
-
-def test_feature_columns_does_not_include_analysis_id():
-    assert "analysis_id" not in feature_columns()
+from .conftest import make_candidate
 
 
 # ---------------------------------------------------------------------------
-# upsert_row + load_all
+# Registry CSV
 # ---------------------------------------------------------------------------
 
 
 def test_upsert_creates_csv_with_header(tmp_bank):
     _, csv_path, _, _ = tmp_bank
     assert not csv_path.exists()
-    upsert_row("a_20260101_aaa111", fake_scores(0))
+    upsert_chart_eligible("a_20260101_aaa111", True)
     assert csv_path.exists()
     with csv_path.open() as f:
         reader = csv.reader(f)
         header = next(reader)
-    assert header[0] == "analysis_id"
-    assert header[1:] == feature_columns()
+    assert header == ["analysis_id", "chart_eligible"]
 
 
-def test_upsert_appends_new_row(tmp_bank):
-    upsert_row("a_20260101_aaa111", fake_scores(0))
-    upsert_row("a_20260102_bbb222", fake_scores(1))
-    rows = load_all()
-    assert set(rows.keys()) == {"a_20260101_aaa111", "a_20260102_bbb222"}
+def test_upsert_records_chart_eligible(tmp_bank):
+    upsert_chart_eligible("a_yes", True)
+    upsert_chart_eligible("a_no", False)
+    flags = load_chart_eligibility()
+    assert flags == {"a_yes": True, "a_no": False}
 
 
 def test_upsert_replaces_existing_row(tmp_bank):
-    """Re-scoring an analysis_id replaces the old row in place."""
-    _, csv_path, _, _ = tmp_bank
-    upsert_row("a_20260101_aaa111", fake_scores(0))
-    upsert_row("a_20260102_bbb222", fake_scores(1))
-    upsert_row("a_20260103_ccc333", fake_scores(2))
-
-    # Re-score the middle one with a different vector
-    new_scores = fake_scores(7)
-    upsert_row("a_20260102_bbb222", new_scores)
-
-    rows = load_all()
-    assert len(rows) == 3
-    assert rows["a_20260102_bbb222"] == new_scores
-
-    # Row order should be preserved (no duplicates)
-    with csv_path.open() as f:
-        reader = csv.DictReader(f)
-        ids = [r["analysis_id"] for r in reader]
-    assert ids == [
-        "a_20260101_aaa111",
-        "a_20260102_bbb222",
-        "a_20260103_ccc333",
-    ]
+    upsert_chart_eligible("a_id", False)
+    upsert_chart_eligible("a_id", True)
+    flags = load_chart_eligibility()
+    assert flags == {"a_id": True}
 
 
-def test_load_all_skips_blank_rows(tmp_bank):
-    _, csv_path, _, _ = tmp_bank
-    upsert_row("a_20260101_aaa111", fake_scores(0))
-    # Manually append a blank-id row
-    with csv_path.open("a") as f:
-        f.write("," + ",".join("0" for _ in feature_columns()) + "\n")
-    rows = load_all()
-    assert "" not in rows
-    assert "a_20260101_aaa111" in rows
-
-
-def test_load_all_returns_empty_when_csv_missing(tmp_bank):
-    assert load_all() == {}
+def test_load_chart_eligibility_returns_empty_when_missing(tmp_bank):
+    assert load_chart_eligibility() == {}
 
 
 # ---------------------------------------------------------------------------
-# retrieval.nearest
+# Embedding persistence (encoder is stubbed by fake_encoder fixture)
 # ---------------------------------------------------------------------------
 
 
-def _seed_corpus(n: int) -> None:
-    """Seed the CSV with `n` synthetic procedures, each with a unique vector."""
-    for i in range(n):
-        upsert_row(f"a_20260101_proc{i:03d}", fake_scores(i))
-
-
-def test_nearest_empty_corpus_returns_empty(tmp_bank):
-    assert nearest(fake_scores(0)) == []
-
-
-def test_nearest_finds_self_at_distance_zero(tmp_bank):
-    """An exact-vector match should be the #1 result with distance 0."""
-    _seed_corpus(10)
-    target = fake_scores(3)
-    matches = nearest(target)
-    assert matches[0].analysis_id == "a_20260101_proc003"
-    assert matches[0].euclidean_dist == pytest.approx(0.0)
-    assert matches[0].cosine_sim == pytest.approx(1.0)
-
-
-def test_nearest_caps_at_max_per_strategy_with_small_corpus(tmp_bank):
-    """With 10 procs and percentile=0.10 (top 1), Euclidean returns ≥1.
-
-    Capped at max_per_strategy=3 → that's the upper bound for the
-    Euclidean strategy. Cosine adds up to 3 more → ≤ 6 deduped total.
-    """
-    _seed_corpus(10)
-    target = fake_scores(0)
-    matches = nearest(target, max_per_strategy=3, euclidean_percentile=0.10)
-    assert 1 <= len(matches) <= 6
-
-
-def test_nearest_cosine_threshold_filters(tmp_bank):
-    """min_cosine=2.0 (impossible) means cosine strategy contributes nothing.
-
-    Result count should be ≤ Euclidean cap.
-    """
-    _seed_corpus(20)
-    target = fake_scores(0)
-    matches = nearest(target, max_per_strategy=3, min_cosine=2.0)
-    # Only Euclidean strategy contributes when cosine threshold is impossible
-    assert len(matches) <= 3
-
-
-def test_nearest_dedup_across_strategies(tmp_bank):
-    """A match that wins both strategies should appear exactly once."""
-    _seed_corpus(10)
-    target = fake_scores(3)  # exact match to proc003
-    matches = nearest(target, max_per_strategy=3)
-    ids = [m.analysis_id for m in matches]
-    assert len(ids) == len(set(ids))
-
-
-def test_nearest_match_carries_readme_path(tmp_bank):
+def test_compute_and_persist_writes_npy(tmp_bank):
     _, _, procs, _ = tmp_bank
-    _seed_corpus(5)
-    target = fake_scores(0)
-    matches = nearest(target)
-    assert matches[0].path_to_readme == procs / matches[0].analysis_id / "README.md"
+    cand = make_candidate(procs, name="a_20260101_aaa111")
+    out = compute_and_persist(cand)
+    assert out.exists()
+    assert out.name == EMBEDDINGS_FILENAME
+    arr = np.load(out)
+    # 8 paraphrases + 1 summary
+    assert arr.shape == (9, 8)
+    assert arr.dtype == np.float32
 
 
-def test_nearest_results_sorted_by_euclidean_ascending(tmp_bank):
-    _seed_corpus(15)
-    target = fake_scores(7)
-    matches = nearest(target)
-    assert matches == sorted(matches, key=lambda m: m.euclidean_dist)
+def test_compute_and_persist_missing_questions_raises(tmp_bank):
+    _, _, procs, _ = tmp_bank
+    cand = make_candidate(procs, name="a_no_q", include_questions=False)
+    with pytest.raises(FileNotFoundError, match="questions.json"):
+        compute_and_persist(cand)
+
+
+def test_load_procedure_vectors_returns_none_when_absent(tmp_bank):
+    _, _, procs, _ = tmp_bank
+    cand = make_candidate(procs, name="a_no_emb")
+    assert load_procedure_vectors(cand) is None
+
+
+def test_load_corpus_walks_procedures(tmp_bank):
+    _, _, procs, _ = tmp_bank
+    a = make_candidate(procs, name="a_one")
+    b = make_candidate(procs, name="a_two")
+    compute_and_persist(a)
+    compute_and_persist(b)
+
+    corpus = load_corpus(procs)
+    assert set(corpus.keys()) == {"a_one", "a_two"}
+    for matrix in corpus.values():
+        assert matrix.shape == (9, 8)
+
+
+def test_load_corpus_encodes_missing_on_demand(tmp_bank):
+    """A procedure with questions.json but no embeddings.npy gets encoded."""
+    _, _, procs, _ = tmp_bank
+    cand = make_candidate(procs, name="a_no_cache")
+    # Sanity: no cache yet
+    assert not (cand / EMBEDDINGS_FILENAME).exists()
+    corpus = load_corpus(procs, encode_missing=True)
+    assert "a_no_cache" in corpus
+    assert (cand / EMBEDDINGS_FILENAME).exists()
+
+
+def test_load_corpus_skips_missing_when_encode_disabled(tmp_bank):
+    _, _, procs, _ = tmp_bank
+    make_candidate(procs, name="a_skip")
+    corpus = load_corpus(procs, encode_missing=False)
+    assert corpus == {}

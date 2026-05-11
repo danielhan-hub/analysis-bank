@@ -1,0 +1,13 @@
+{
+  "summary": "Per-combo NTB conversion table over {SP, Display, SUAS}, lift vs SP-only baseline.",
+  "questions": [
+    "Per-combo NTB conversion rate, attributed NTB sales, and lift vs SP-only baseline for every observed {SP, Display, SUAS} 3-bit combination — rendered as a horizontal bar chart of top combos.",
+    "Which tactic combination drives the highest new-to-brand conversion rate for this brand over this window — SP alone, SP+Display, the full triple?",
+    "How much incremental NTB lift do multi-tactic combos deliver versus a SP-only baseline?",
+    "For an account+brand, classify exposed users into 3-bit {SP, Display, SUAS} combos and report exposed users, NTB converters, NTB rate, NTB sales, and lift index per combo.",
+    "Multi-tactic media-mix table: NTB conversion rate and dollar contribution by every tactic combination, with small-cell suppression at 100 users.",
+    "Where does the SP+Display+SUAS triple-overlap actually sit on NTB conversion — pulling its weight or noisy?",
+    "Is SUAS-only effectively a non-converter for this brand — what's its NTB rate compared to combos that include SP?",
+    "Tactic combo NTB rollup: bar chart of NTB conversion rate per combination, attributed NTB dollars per combination, and lift indexed to SP-only = 1.0."
+  ]
+}

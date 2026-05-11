@@ -1,0 +1,125 @@
+# Retrieval eval set — labelled (case → expected_procedure) pairs.
+#
+# Drawn from past correctly-answered runs (Mary Ruth Q4, Panera Q2, etc.).
+# This file is the ground truth the eval harness scores against; populate
+# it from your own historical runs before running the harness.
+#
+# Schema:
+#   - id: human-readable label for the row (case + question slot)
+#     question: the question spec text breakdown_ask would emit (NOT the
+#       raw stakeholder ask — the decomposed grain/columns/headline form)
+#     expected: the analysis_id that retrieval should rank #1
+#     accept_top_k: optional list of analysis_ids that are also acceptable
+#       in the top 5 (useful when two procedures legitimately answer the
+#       same shape — e.g., the cohort-decay procedure and a related
+#       repeat-rate procedure)
+#     notes: optional one-line explanation
+#
+# Add more rows as new cases prove out. The harness fails CI if recall@5
+# regresses against the previous run.
+
+cases:
+  # ---- a_20260506_85b279 — brand cohort opportunity composition ----
+  - id: mary_ruth_q4_brand_cohort_opportunity
+    question: >
+      For brand 1267953 in categories tied to the partner account, plot
+      the brand cohort opportunity composition: five cohorts (Brand
+      Loyalist, Brand-Biased Switcher, Switcher No Brand Bias,
+      Competitor-Biased Switcher, Competitor Loyalist) on a 100% stacked
+      column with the addressable Competitor Loyalist NTB pool
+      highlighted in IC_GREEN.
+    expected: a_20260506_85b279
+    notes: Run 2 reused this exactly; canonical chart contract.
+
+  - id: brand_cohort_opportunity_terse
+    question: >
+      Brand opportunity composition — split category buyers into the 5
+      brand-share cohorts and size the Competitor Loyalist NTB pool.
+    expected: a_20260506_85b279
+
+  - id: brand_cohort_opportunity_stakeholder
+    question: >
+      Where is the NTB headroom for this brand? Decompose category buyers
+      by share-of-wallet bucket so I can size the Competitor Loyalist pool
+      we don't yet own.
+    expected: a_20260506_85b279
+
+  # ---- a_20260503_c2e602 — multi-tactic NTB conversion ----
+  - id: multi_tactic_ntb_conversion_canonical
+    question: >
+      Multi-tactic NTB lift table — every {SP, Display, SUAS} combo,
+      conversion rate per combo, lift vs the SP-only baseline.
+    expected: a_20260503_c2e602
+
+  - id: multi_tactic_ntb_stakeholder
+    question: >
+      Which combination of SP, Display, and SUAS converts the most
+      new-to-brand buyers? I want a per-combo conversion table with lift
+      vs SP-only.
+    expected: a_20260503_c2e602
+
+  - id: multi_tactic_ntb_compare_phrasing
+    question: >
+      Compare new-to-brand conversion for shoppers exposed to SP only vs
+      SP+Display vs SP+SUAS vs all three.
+    expected: a_20260503_c2e602
+
+  # ---- a_20260506_065c82 — cumulative SP ROAS by clicker cohort ----
+  - id: sp_clicker_cumulative_roas_canonical
+    question: >
+      Monthly cumulative SP ROAS for a fixed clicker cohort across the
+      chart window — bar+line combo of cumulative sales, spend, and ROAS.
+    expected: a_20260506_065c82
+
+  - id: sp_clicker_cohort_maturity
+    question: >
+      Show how the SP clicker cohort's cumulative iROAS evolves
+      month-over-month as the cohort matures.
+    expected: a_20260506_065c82
+
+  - id: sp_cost_to_convert_curve
+    question: >
+      Cumulative cost-to-convert curve for SP clickers — monthly
+      cumulative spend, cumulative attributed sales, and the rolling
+      cumulative ROAS.
+    expected: a_20260506_065c82
+
+  # ---- a_20260506_873149 — ad-driven cohort cumulative brand repeat ----
+  - id: ad_cohort_cumulative_repeat_canonical
+    question: >
+      Ad-driven cohort cumulative brand repeat over 12 weeks at 2-week
+      buckets, broken out by NTX segment, bar+line on twin axes.
+    expected: a_20260506_873149
+
+  - id: ad_cohort_repeat_curve
+    question: >
+      Cumulative brand repeat curve for the ad-driven cohort, segmented
+      by NTX grain, biweekly through week 12.
+    expected: a_20260506_873149
+
+  - id: ad_cohort_repeat_stakeholder
+    question: >
+      How does cumulative brand repeat evolve for the ad-attributed
+      cohort vs other NTX segments — biweekly buckets, 12-week horizon.
+    expected: a_20260506_873149
+
+  # ---- a_20260506_c0eb08 — promo-redeemer cohort brand repeat ----
+  - id: promo_redeemer_repeat_canonical
+    question: >
+      Promotion-redeemer cohort cumulative brand repeat split by NTC /
+      Previous Competitor Only / Existing Users, forward observation
+      window.
+    expected: a_20260506_c0eb08
+
+  - id: promo_redeemer_stickiness
+    question: >
+      How sticky are promo redeemers? Cumulative brand repeat for
+      redeemers, split into the three competitive-history segments.
+    expected: a_20260506_c0eb08
+
+  - id: promo_incremental_loyalty
+    question: >
+      Did the promo build incremental loyalty? Show repeat-purchase
+      trajectory for redeemers, broken into Net New, Switchers, and
+      Existing.
+    expected: a_20260506_c0eb08

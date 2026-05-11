@@ -1,17 +1,18 @@
-"""Generated from analyses/q2/chart.ipynb on promotion.
+"""Generated from analyses/q2b/chart.ipynb on promotion.
 
-Renders the cumulative brand-repeat trajectory for a promo-acquired
-cohort, split into two views:
-  - chart_1.png : Overall (all 3 segments summed -> all SUAS redeemers)
-  - chart_2.png : NTB only (NTC + Prev. Competitor Only)
+Renders the cumulative brand-repeat trajectory for an ad-driven cohort
+(SP + Display + SUAS), summed across NTB sub-segments
+(NTC + Prev. Competitor Only) into a single headline view:
 
-Each chart is a bar+line combo on twin axes:
+  - chart_1.png : NTB combined (NTC + Prev. Competitor Only)
+
+The chart is a bar+line combo on twin axes:
   - Bars (left axis, IC_DARKGREEN) : cumulative Brand Repeat Rate (%).
   - Line (right axis, ACCENT_ORANGE, with markers) : cumulative
     Brand Repeat Sales ($).
 
 Data is loaded by CALLing
-SANDBOX_DB.DANIELHAN.promo_cohort_brand_repeat_by_segment via
+SANDBOX_DB.DANIELHAN.ad_driven_cohort_brand_repeat_by_segment via
 instaquery (no CSV dependency at runtime).
 """
 
@@ -22,7 +23,6 @@ import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from matplotlib.patches import Rectangle
 from matplotlib.ticker import FuncFormatter
 
 # --- Brand colors (from chart_styles.md drop-in block) ---
@@ -121,9 +121,9 @@ def save_chart(fig, path, *, transparent=True):
 # Internal helper: render one bar+line combo panel from pre-aggregated arrays.
 # ============================================================================
 def _render_bar_line_panel(
-    weeks,           # list[float] — bucket end weeks (x-axis ticks)
-    rate_vals,       # list[float] — cumulative repeat rate (% scale, e.g. 13.4)
-    sales_vals,      # list[float] — cumulative repeat sales ($)
+    weeks,           # list[float] -- bucket end weeks (x-axis ticks)
+    rate_vals,       # list[float] -- cumulative repeat rate (% scale, e.g. 13.4)
+    sales_vals,      # list[float] -- cumulative repeat sales ($)
     output_path,
     figsize,
     bar_width,
@@ -203,39 +203,51 @@ def render_chart(
     v_forward_window_days=84,
     v_bucket_size_days=14,
     v_country_id=840,
+    v_ntx_lookback_days=182,
+    v_include_existing_users=False,
+    v_include_sp_display_attribution=True,
+    v_include_suas_redemption=True,
     *,
-    # Scaling / formatting kwargs -- defaults reproduce the source-case PNGs
+    # Scaling / formatting kwargs -- defaults reproduce the source-case PNG
     figsize=FIGSIZE_WIDE,
     bar_width=0.6,
     rate_axis_pad=1.25,            # multiplier of max(rate) for left-axis ylim
     sales_axis_pad=1.25,           # multiplier of max(sales) for right-axis ylim
     sales_label_y_offset_frac=0.04,
-    output_path_overall="chart_1.png",
-    output_path_ntb="chart_2.png",
+    output_path="chart_1.png",
     warehouse="DEVELOPER_XL_WH",
 ):
-    """Render the two cumulative brand-repeat charts (Overall + NTB).
+    """Render the NTB-combined cumulative brand-repeat chart.
 
     Positional args mirror the stored procedure's parameter list. Kwargs
     are scaling/formatting controls; defaults reproduce the source-case
-    PNGs verbatim.
+    PNG verbatim.
 
-    Returns a 2-tuple of matplotlib Figures: (overall_fig, ntb_fig).
-    Both PNGs are written to disk as a side effect.
+    The procedure may return one or both NTB sub-segments (NTC,
+    Prev. Competitor Only) plus optionally Existing Users; this function
+    sums NTB sub-segments into a single combined view. Existing Users (if
+    present) are intentionally ignored -- the headline view is NTB only.
+
+    Returns the matplotlib Figure. PNG is written to disk as a side effect.
     """
     # --- Pull data via the stored procedure (fully qualified -- iq.query
     # uses its own session context and won't honor any USE SCHEMA). Use
-    # result_type=list because Snowflake returns CALL results in JSON
-    # format, which breaks fetch_pandas_all() on recent connector versions.
+    # get_conn + cur.description to read column names from the cursor directly
+    # rather than relying on iq.query's result_type, which changed behaviour
+    # across instaquery versions (tuples vs dicts).
     sql = (
-        "CALL SANDBOX_DB.DANIELHAN.promo_cohort_brand_repeat_by_segment("
+        "CALL SANDBOX_DB.DANIELHAN.ad_driven_cohort_brand_repeat_by_segment("
         f"'{v_promo_campaign_ids}', "
         f"{int(v_entity_brand_id)}, "
         f"'{v_cohort_window_start}'::DATE, "
         f"'{v_cohort_window_end}'::DATE, "
         f"{int(v_forward_window_days)}, "
         f"{int(v_bucket_size_days)}, "
-        f"{int(v_country_id)}"
+        f"{int(v_country_id)}, "
+        f"{int(v_ntx_lookback_days)}, "
+        f"{'TRUE' if v_include_existing_users else 'FALSE'}, "
+        f"{'TRUE' if v_include_sp_display_attribution else 'FALSE'}, "
+        f"{'TRUE' if v_include_suas_redemption else 'FALSE'}"
         ")"
     )
     conn = iq.get_conn("snowflake", conn_params={"warehouse": warehouse})
@@ -255,7 +267,7 @@ def render_chart(
 
     weeks = sorted(df["WEEKS_SINCE_CONVERSION"].unique())
 
-    # Pivot wide on segment so we can sum across segment subsets.
+    # Pivot wide on segment so we can sum NTB sub-segments together.
     piv = df.pivot(
         index="WEEKS_SINCE_CONVERSION",
         columns="SEGMENT",
@@ -263,33 +275,14 @@ def render_chart(
                 "COHORT_SIZE"],
     ).reindex(weeks)
 
-    expected_segments = ("NTC", "Prev. Competitor Only", "Existing Users")
-    for seg in expected_segments:
-        if (("COHORT_SIZE", seg) not in piv.columns):
-            # Empty segment -- fill with zeros so summation still works.
+    # NTB-combined headline. Fill missing sub-segments with zeros so the
+    # function still works if the procedure returned only one of the two.
+    for seg in ("NTC", "Prev. Competitor Only"):
+        if ("COHORT_SIZE", seg) not in piv.columns:
             piv[("COHORT_SIZE", seg)] = 0
             piv[("N_REPEATERS_THROUGH_BUCKET", seg)] = 0
             piv[("BRAND_REPEAT_SALES_USD", seg)] = 0
 
-    # --- Overall (all 3 segments) ---
-    total_size = int(
-        piv[("COHORT_SIZE", "NTC")].iloc[0]
-        + piv[("COHORT_SIZE", "Prev. Competitor Only")].iloc[0]
-        + piv[("COHORT_SIZE", "Existing Users")].iloc[0]
-    )
-    overall_n = (
-        piv[("N_REPEATERS_THROUGH_BUCKET", "NTC")].values
-        + piv[("N_REPEATERS_THROUGH_BUCKET", "Prev. Competitor Only")].values
-        + piv[("N_REPEATERS_THROUGH_BUCKET", "Existing Users")].values
-    )
-    overall_rate = (overall_n / total_size * 100) if total_size else np.zeros_like(overall_n, dtype=float)
-    overall_sales = (
-        piv[("BRAND_REPEAT_SALES_USD", "NTC")].values
-        + piv[("BRAND_REPEAT_SALES_USD", "Prev. Competitor Only")].values
-        + piv[("BRAND_REPEAT_SALES_USD", "Existing Users")].values
-    ).astype(float)
-
-    # --- NTB (NTC + Prev. Competitor Only) ---
     ntb_size = int(
         piv[("COHORT_SIZE", "NTC")].iloc[0]
         + piv[("COHORT_SIZE", "Prev. Competitor Only")].iloc[0]
@@ -304,34 +297,22 @@ def render_chart(
         + piv[("BRAND_REPEAT_SALES_USD", "Prev. Competitor Only")].values
     ).astype(float)
 
-    overall_fig = _render_bar_line_panel(
+    fig = _render_bar_line_panel(
         weeks=weeks,
-        rate_vals=overall_rate.tolist(),
-        sales_vals=overall_sales.tolist(),
-        output_path=output_path_overall,
+        rate_vals=list(ntb_rate),
+        sales_vals=list(ntb_sales),
+        output_path=output_path,
         figsize=figsize,
         bar_width=bar_width,
         rate_axis_pad=rate_axis_pad,
         sales_axis_pad=sales_axis_pad,
         sales_label_y_offset_frac=sales_label_y_offset_frac,
     )
-    ntb_fig = _render_bar_line_panel(
-        weeks=weeks,
-        rate_vals=ntb_rate.tolist(),
-        sales_vals=ntb_sales.tolist(),
-        output_path=output_path_ntb,
-        figsize=figsize,
-        bar_width=bar_width,
-        rate_axis_pad=rate_axis_pad,
-        sales_axis_pad=sales_axis_pad,
-        sales_label_y_offset_frac=sales_label_y_offset_frac,
-    )
-
-    return overall_fig, ntb_fig
+    return fig
 
 
 # SMOKE-TEST ENTRY ONLY -- pinned SAMPLE CALL args so the promotion-time
-# operator can verify chart.py reproduces the source PNGs. Future reuse
+# operator can verify chart.py reproduces the source PNG. Future reuse
 # callers MUST `import` render_chart and call it with their own params;
 # do NOT run `python chart.py` from a reuse context (it will silently
 # render the SOURCE case's chart in your bundle folder).
@@ -344,12 +325,15 @@ if __name__ == "__main__":
             "381681f9-6c43-4d5a-81d3-13495fec75de"
         ),
         v_entity_brand_id=564770,
-        v_cohort_window_start="2025-08-05",
-        v_cohort_window_end="2025-10-11",
+        v_cohort_window_start="2025-10-01",
+        v_cohort_window_end="2025-12-31",
         v_forward_window_days=84,
         v_bucket_size_days=14,
         v_country_id=840,
-        output_path_overall=str(here / "chart_1.png"),
-        output_path_ntb=str(here / "chart_2.png"),
+        v_ntx_lookback_days=182,
+        v_include_existing_users=False,
+        v_include_sp_display_attribution=True,
+        v_include_suas_redemption=True,
+        output_path=str(here / "chart_1.png"),
     )
-    print("wrote chart_1.png and chart_2.png")
+    print("wrote chart_1.png")

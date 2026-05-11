@@ -1,50 +1,36 @@
 #!/usr/bin/env python3
-"""Backfill the analysis_features.csv from the existing 11 procedures.
+"""Backfill embeddings + chart_eligible rows for every promoted procedure.
 
-For each ``procedures/NN_<name>/``:
-  1. Mint a new analysis_id ``a_<YYYYMMDD>_<6hex>``
-  2. Invoke the 5-jury scorer over ``README.md`` + ``procedure.sql``
-  3. Append the row to ``analysis_features.csv``
-  4. ``git mv`` the folder to ``procedures/<analysis_id>/``
+Idempotent maintenance script. For each ``procedures/<analysis_id>/`` it:
 
-Then delete ``INDEX.md``.
+  1. Ensures ``questions.json`` exists (fails noisily if missing — fix
+     by hand or re-run promotion).
+  2. Encodes the paraphrases via BGE and writes ``embeddings.npy`` if
+     the file is absent or older than ``questions.json``.
+  3. Upserts ``analysis_features.csv`` with the current chart_eligible
+     bit derived from disk (``chart.py`` present == True).
 
-This is a one-shot migration. It expects to be run from the analysis_bank
-repo root with the live ``ads_ms_env`` Python (claude-agent-sdk available).
+After running it also rebuilds ``keyword_matrix.csv`` so Stage B
+matches the post-backfill bank.
 
 Usage:
-    python scripts/backfill_existing_procedures.py [--dry-run]
+    python scripts/backfill_existing_procedures.py [--dry-run] [--force]
 """
 
 from __future__ import annotations
 
 import argparse
-import asyncio
-import secrets
-import subprocess
 import sys
-from datetime import date
 from pathlib import Path
 
-from analysis_bank import (
-    FEATURES_CSV_PATH,
-    PROCEDURES_DIR,
-    ascore,
-    feature_columns,
-    upsert_row,
+from analysis_bank import PROCEDURES_DIR, upsert_chart_eligible
+from analysis_bank.features.embeddings import (
+    EMBEDDINGS_FILENAME,
+    compute_and_persist,
 )
 
 
-REPO_ROOT = PROCEDURES_DIR.parent
-INDEX_PATH = REPO_ROOT / "INDEX.md"
-
-
-def mint_analysis_id() -> str:
-    return f"a_{date.today():%Y%m%d}_{secrets.token_hex(3)}"
-
-
 def existing_procedure_dirs() -> list[Path]:
-    """Return procedures/NN_<name>/ folders, sorted by NN."""
     if not PROCEDURES_DIR.exists():
         return []
     return sorted(
@@ -53,82 +39,54 @@ def existing_procedure_dirs() -> list[Path]:
     )
 
 
-async def score_one(proc_dir: Path) -> dict[str, int]:
-    readme = (proc_dir / "README.md").read_text(encoding="utf-8")
-    sql = (proc_dir / "procedure.sql").read_text(encoding="utf-8")
-    print(f"  scoring {proc_dir.name} (5-jury)...", flush=True)
-    return await ascore(readme, sql)
+def needs_reembed(proc_dir: Path) -> bool:
+    qjson = proc_dir / "questions.json"
+    emb = proc_dir / EMBEDDINGS_FILENAME
+    if not emb.exists():
+        return True
+    return qjson.stat().st_mtime > emb.stat().st_mtime
 
 
-def git_mv(src: Path, dst: Path) -> None:
-    """Use git mv so history follows; fall back to plain rename if not in git."""
-    try:
-        subprocess.run(
-            ["git", "mv", str(src), str(dst)],
-            cwd=REPO_ROOT,
-            check=True,
-            capture_output=True,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        src.rename(dst)
+def rebuild_keyword_matrix() -> None:
+    from analysis_bank.features.keyword_index import (
+        DEFAULT_KEYWORDS_PATH,
+        DEFAULT_MATRIX_PATH,
+    )
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from build_keyword_matrix import build_matrix  # type: ignore
+    n_rows, n_cats = build_matrix(
+        PROCEDURES_DIR, DEFAULT_KEYWORDS_PATH, DEFAULT_MATRIX_PATH
+    )
+    print(f"Rebuilt keyword_matrix.csv ({n_rows} rows × {n_cats} categories)")
 
 
-def git_rm(p: Path) -> None:
-    try:
-        subprocess.run(
-            ["git", "rm", str(p)],
-            cwd=REPO_ROOT,
-            check=True,
-            capture_output=True,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        if p.exists():
-            p.unlink()
-
-
-async def main(dry_run: bool = False) -> int:
+def main(dry_run: bool, force: bool) -> int:
     procs = existing_procedure_dirs()
     if not procs:
         print("No procedures to backfill.", file=sys.stderr)
         return 1
 
-    print(f"Backfilling {len(procs)} procedure(s)...")
-    print(f"  feature dictionary: {len(feature_columns())} features")
-    print(f"  CSV: {FEATURES_CSV_PATH}")
-    print(f"  procedures: {PROCEDURES_DIR}\n")
-
-    summary: list[tuple[str, str, int]] = []  # (old_name, new_id, n_scores)
-
-    for old_dir in procs:
-        analysis_id = mint_analysis_id()
-        if dry_run:
-            print(f"  [dry-run] {old_dir.name}  ->  {analysis_id}")
-            summary.append((old_dir.name, analysis_id, 0))
+    print(f"Backfilling {len(procs)} procedure(s) at {PROCEDURES_DIR}")
+    for proc in procs:
+        qjson = proc / "questions.json"
+        if not qjson.exists():
+            print(f"  ! {proc.name}: missing questions.json — skipping")
             continue
 
-        scores = await score_one(old_dir)
-        upsert_row(analysis_id, scores)
-        new_dir = PROCEDURES_DIR / analysis_id
-        git_mv(old_dir, new_dir)
-        print(f"    {old_dir.name}  ->  {analysis_id}  ({len(scores)}/76 features)")
-        summary.append((old_dir.name, analysis_id, len(scores)))
-
-    # Delete INDEX.md (the routing index is dead — retrieval is now feature-vector)
-    if INDEX_PATH.exists():
+        chart_eligible = (proc / "chart.py").exists()
         if dry_run:
-            print(f"\n  [dry-run] would delete {INDEX_PATH}")
-        else:
-            git_rm(INDEX_PATH)
-            print(f"\nDeleted {INDEX_PATH}")
+            action = "re-encode" if (force or needs_reembed(proc)) else "(cached)"
+            print(f"  [dry-run] {proc.name}: chart_eligible={chart_eligible} ({action})")
+            continue
 
-    print("\n=== Summary ===")
-    print(f"{'old name':<35} {'new analysis_id':<25} {'features':>10}")
-    print("-" * 73)
-    for old, new, n in summary:
-        print(f"{old:<35} {new:<25} {n:>10}")
-    print(f"\nTotal: {len(summary)} procedures backfilled.")
-    if dry_run:
-        print("(dry-run — no files changed)")
+        if force or needs_reembed(proc):
+            compute_and_persist(proc)
+            print(f"  embedded {proc.name}")
+        upsert_chart_eligible(proc.name, chart_eligible)
+
+    if not dry_run:
+        rebuild_keyword_matrix()
+
     return 0
 
 
@@ -137,7 +95,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Print the plan without scoring or renaming anything.",
+        help="Print the plan without writing anything.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-encode every procedure even if embeddings.npy is current.",
     )
     args = parser.parse_args()
-    sys.exit(asyncio.run(main(dry_run=args.dry_run)))
+    sys.exit(main(dry_run=args.dry_run, force=args.force))

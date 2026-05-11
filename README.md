@@ -1,32 +1,41 @@
 # Analysis Bank
 
-A curated library of reusable **end-to-end analysis bundles** for Instacart Ads Measurement Science. Each bundle is anchored by a parameterized Snowflake stored procedure (`procedure.sql`) and ships with a documented README and — when the source analysis produced a chart — a callable `chart.py` that renders the canonical visualization. Each bundle is scored against a fixed 76-feature rubric so retrieval can find the closest matches for a new question by feature-vector similarity.
+A curated library of reusable **end-to-end analysis bundles** for Instacart Ads Measurement Science. Each bundle is anchored by a parameterized Snowflake stored procedure (`procedure.sql`) and ships with a documented README, a `questions.json` paraphrase set, and — when the source analysis produced a chart — a callable `chart.py` that renders the canonical visualization. Retrieval runs a hybrid pipeline (BGE dense embeddings + BM25 sparse keywords + cross-encoder rerank + LLM fitness) so a new question can find the closest matching bundle.
 
 ## What's in here
 
 ```
 analysis_bank/                  # Python package
-  receiver.py                   # AnalysisBankReceiver — curator API (single-shot ACCEPT/REJECT)
-  smoke.py                      # Smoke-test a procedure.sql against Snowflake
+  receiver.py                   # AnalysisBankReceiver — curator API (single-shot ACCEPT/REJECT + auto-merge)
+  smoke.py                      # Smoke-test a procedure.sql against Snowflake (SmokeTestError on failure)
   paths.py                      # Resolves repo paths at runtime
+  _async.py                     # Jupyter-safe sync/async bridge (run_sync)
   features/
-    feature_dict.md             # Canonical 76-feature rubric (scoring spec)
-    registry.py                 # CSV upsert/load by analysis_id
-    retrieval.py                # Euclidean + cosine nearest-neighbor search
-    scorer.py                   # 5-juror Olympics ensemble scorer
+    embeddings.py               # BGE-large encoder + per-procedure embeddings.npy persistence
+    keyword_index.py            # 15-category BM25 sparse retrieval over keyword_matrix.csv
+    keywords.yaml               # Curated keyword taxonomy (15 categories)
+    registry.py                 # CSV upsert/load: analysis_id → chart_eligible
+    retrieval.py                # Hybrid pipeline: HyDE → dense + sparse → rerank → LLM fitness
   prompts/
-    scoring_agent.md            # System prompt for the 5-juror scorer
     inspector_agent.md          # System prompt for the receiver Opus agent
-analysis_features.csv           # One row per scored procedure (analysis_id + 76 features)
+analysis_features.csv           # One row per merged procedure (analysis_id, chart_eligible)
+keyword_matrix.csv              # Sparse retrieval index (analysis_id × 15 categories)
 procedures/                     # Installed analysis bundles (a_<YYYYMMDD>_<6hex>/)
+  _index.md                     # Auto-maintained Markdown table (analysis_id | summary | chart_eligible)
   <analysis_id>/
     README.md                   # What this bundle answers, params, output
     procedure.sql               # The Snowflake CREATE OR REPLACE PROCEDURE
-    chart.py                    # OPTIONAL — callable render_chart(...) that can produce one or more chart_n.png files
+    questions.json              # {summary, questions: [8 paraphrases]} — embedded for retrieval
+    embeddings.npy              # BGE-large vectors over questions + summary (computed at merge)
+    chart.py                    # OPTIONAL — callable render_chart(...) that emits chart_n.png files
+    chart_skipped.md            # OPTIONAL — present when no chart applies (rationale)
     [other source artifacts]    # CSV outputs, helper scripts, notes carried forward by promotion
 candidates/                     # Inbox for proposed new bundles (curator workspace)
 scripts/
-  backfill_existing_procedures.py  # One-shot migration: score + rename existing procs
+  backfill_existing_procedures.py  # Idempotent: re-embed + rebuild keyword matrix + upsert chart_eligible rows
+  build_keyword_matrix.py          # Rebuild keyword_matrix.csv from procedures/ + keywords.yaml
+tests/
+  retrieval_eval/               # Offline retrieval eval harness (recall@1/@5, MRR vs baseline.json)
 ```
 
 The bank is **curated**. New bundles don't land here automatically — they're proposed by the [`ads_ms_analysis`](../ads_ms_analysis) promote step, then evaluated and merged by the curator using `AnalysisBankReceiver`.
@@ -53,7 +62,9 @@ analysis_bank/candidates/<analysis_id>/
         ▼
 verdict: ACCEPT | REJECT
         │
-        ├─ ACCEPT → 5-juror score, upsert CSV row, copy to procedures/, drop from candidates
+        ├─ ACCEPT → copy to procedures/, compute embeddings.npy, rebuild keyword_matrix.csv,
+        │           upsert analysis_features.csv (chart_eligible), update procedures/_index.md,
+        │           drop from candidates
         └─ REJECT → prints reason + suggested changes; candidate stays in candidates/ for inspection
 ```
 
@@ -87,10 +98,10 @@ Returns the new path under `candidates/`.
 
 Evaluate every candidate in `candidates/`. Sync — works in plain Python and in Jupyter without `asyncio.run` / `await`. For concurrent use inside an existing async context, call `await receiver.aevaluate()` instead. For each one:
 
-1. **Sanity check** files (`procedure.sql`, `README.md`)
+1. **Sanity check** files (`procedure.sql`, `README.md`, `questions.json`, plus the chart contract: either valid `chart.py` + `chart_n.png` or a written `chart_skipped.md`).
 2. **Smoke test** the procedure against Snowflake (compiles + runs SAMPLE CALL). On failure → auto-`REJECT`, no LLM call spent.
 3. **Run the inspector agent** (Opus) for the qualitative judgment — single-shot ACCEPT/REJECT.
-4. On `ACCEPT`: invoke the 5-juror scorer, upsert the row in `analysis_features.csv`, copy the folder into `procedures/<analysis_id>/`, remove from `candidates/`. Prints `ACCEPTED AND MERGED: <analysis_id>`.
+4. On `ACCEPT`: copy the folder into `procedures/<analysis_id>/`, compute and persist `embeddings.npy`, rebuild `keyword_matrix.csv`, upsert `chart_eligible` into `analysis_features.csv`, update `procedures/_index.md`, reset retrieval caches, and remove from `candidates/`. Prints `ACCEPTED AND MERGED: <analysis_id>`.
 5. On `REJECT`: print the reason + suggested changes block. The candidate stays in `candidates/` so the operator can inspect it (or `discard()` it).
 
 Returns a list of `ReceiverVerdict(candidate, verdict, reason)` where verdict is `"ACCEPT"` or `"REJECT"`.
@@ -109,23 +120,23 @@ Delete a single candidate folder from `candidates/`. Use for `REJECT` candidates
 
 Delete every candidate folder from `candidates/`. Returns the number deleted.
 
-## Feature scoring + retrieval
+## Retrieval — hybrid pipeline
 
-The 76-feature rubric in `features/feature_dict.md` is the canonical scoring spec. Both procedures and questions are scored against the same rubric so they live in the same vector space.
+`analysis_bank.aretrieve(question_text, ...)` (and its sync wrapper `retrieve(...)`) returns ranked `Candidate(analysis_id, chart_eligible, fitness_label, rationale, ...)` for a question. The pipeline runs in five stages:
 
-**Scorer.** `analysis_bank.score(readme_text, sql_text)` and `analysis_bank.score_question(question, case_summary)` both run a 5-juror Olympics ensemble. Both are sync (Jupyter-friendly); for concurrent use inside async code, call the `ascore` / `ascore_question` variants directly.
+1. **HyDE** — Haiku drafts a synthetic README that *would* answer the question; the draft is averaged with the raw question vector to bias the dense recall.
+2. **Dense recall (BGE-large)** — cosine similarity (max-pool over each procedure's `embeddings.npy`) returns top-`k_dense` analysis_ids.
+3. **Sparse recall (BM25)** — `keyword_index.rank_question` scores the question against `keyword_matrix.csv` (15 curated categories in `features/keywords.yaml`) and returns top-`k_sparse` analysis_ids. The two recall sets are unioned and deduped.
+4. **Cross-encoder rerank (BGE-reranker-large)** — re-scores the union against the question; trims to top-`k_rerank`.
+5. **LLM fitness (Opus)** — judges each survivor as `STRONG`, `WEAK`, or `REJECT` with a one-line rationale. `force_top_1=True` collapses the result to the single best regardless of label; `lenient=False` tightens the rubric.
 
-1. Five parallel scoring runs (Opus, `asyncio.gather`)
-2. Per feature: drop the highest and lowest score
-3. Average the middle three; round to the nearest integer
-4. Clamp to `[-5, 5]`
+Optional flags: `require_chart_eligible=True` filters to `chart_eligible` rows (Reuse-Only Mode in `ads_ms_analysis`); `skip_hyde` / `skip_llm_fitness` short-circuit Stages 1 and 5 for offline eval.
 
-**Retrieval.** `analysis_bank.nearest(target_scores)` returns up to 6 deduped matches:
-- Top 10% of the corpus by Euclidean distance, capped at 3
-- Plus entries with cosine similarity ≥ 0.5, top 3
-- Sorted by Euclidean ascending so the most similar surfaces first
+**Embeddings persistence.** `embeddings.compute_and_persist(procedure_dir)` reads `questions.json`, encodes the 8 paraphrases plus the summary with BGE-large, and writes `embeddings.npy` next to the procedure. The receiver does this on every ACCEPT; `scripts/backfill_existing_procedures.py` re-embeds the corpus idempotently when the encoder or `keywords.yaml` changes.
 
-The orchestrator scores each plan-analysis question and surfaces these matches as candidates the agent can consider — they are not mandates.
+**Chart-eligibility registry.** `analysis_features.csv` is a minimal CSV (`analysis_id,chart_eligible`) maintained by `registry.upsert_chart_eligible`. It is the only state retrieval reads to gate Reuse-Only Mode.
+
+**Eval harness.** `tests/retrieval_eval/` runs labelled cases through `aretrieve` and reports recall@1, recall@5, and MRR against `baseline.json`. Recall@5 gates CI; recall@1 and MRR are informational so a single judgment-call regression doesn't block merges.
 
 ## Smoke testing
 
@@ -153,4 +164,4 @@ This makes `analysis_bank` importable while letting `paths.py` resolve `procedur
 
 ## Related
 
-- [`ads_ms_analysis`](../ads_ms_analysis) — the analysis pipeline that produces candidates via `promote_code()` and consumes the bank via `nearest()` for plan-analysis retrieval.
+- [`ads_ms_analysis`](../ads_ms_analysis) — the analysis pipeline that produces candidates via `promote_code()` and consumes the bank via `aretrieve()` for plan-analysis retrieval.
