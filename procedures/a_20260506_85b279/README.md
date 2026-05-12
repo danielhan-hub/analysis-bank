@@ -157,7 +157,7 @@ incremental sales potential.
 ## Sample Call
 
 ```sql
-CALL SANDBOX_DB.DANIELHAN.brand_cohort_opportunity_analysis(
+CALL SANDBOX_DB.DANIELHAN.a_20260506_85b279(
     '564770',          -- v_brand_ids        (Vital Farms)
     '598,869',         -- v_category_ids     (Chicken Eggs + Egg Substitutes)
     '2026-01-01'::DATE,

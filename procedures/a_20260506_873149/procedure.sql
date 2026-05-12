@@ -3,7 +3,7 @@ USE SCHEMA SANDBOX_DB.DANIELHAN;
 USE WAREHOUSE DEVELOPER_XL_WH;
 
 ----------------------------------------------------------------------------
--- Procedure: SANDBOX_DB.DANIELHAN.ad_driven_cohort_brand_repeat_by_segment
+-- Procedure: SANDBOX_DB.DANIELHAN.a_20260506_873149
 --
 -- Purpose: For users whose FIRST ad-driven brand purchase falls in a cohort
 --   window, track cumulative brand repeat behavior over a configurable
@@ -80,7 +80,7 @@ USE WAREHOUSE DEVELOPER_XL_WH;
 --     and treat all cohort users as Existing).
 --
 -- SAMPLE CALL:
--- CALL SANDBOX_DB.DANIELHAN.ad_driven_cohort_brand_repeat_by_segment(
+-- CALL SANDBOX_DB.DANIELHAN.a_20260506_873149(
 --     '5ae514c3-332d-4668-b654-862d95cf755e,16998f0f-578d-411b-8021-eb278004f772,381681f9-6c43-4d5a-81d3-13495fec75de',
 --     564770,
 --     '2025-10-01'::DATE,
@@ -95,7 +95,7 @@ USE WAREHOUSE DEVELOPER_XL_WH;
 -- );
 ----------------------------------------------------------------------------
 
-CREATE OR REPLACE PROCEDURE SANDBOX_DB.DANIELHAN.ad_driven_cohort_brand_repeat_by_segment(
+CREATE OR REPLACE PROCEDURE SANDBOX_DB.DANIELHAN.a_20260506_873149(
     v_promo_campaign_ids              STRING,
     v_entity_brand_id                 BIGINT,
     v_cohort_window_start             DATE,

@@ -3,7 +3,7 @@ USE SCHEMA SANDBOX_DB.DANIELHAN;
 USE WAREHOUSE DEVELOPER_XL_WH;
 
 ----------------------------------------------------------------------------
--- Procedure: SANDBOX_DB.DANIELHAN.promo_cohort_brand_repeat_by_segment
+-- Procedure: SANDBOX_DB.DANIELHAN.a_20260506_c0eb08
 --
 -- Purpose: For users whose FIRST redemption of a target promo (e.g., SUAS,
 --   Free Gift, BOGO) lands in a cohort window, track cumulative brand
@@ -54,7 +54,7 @@ USE WAREHOUSE DEVELOPER_XL_WH;
 --     dim_warehouse gotchas.
 --
 -- SAMPLE CALL:
--- CALL SANDBOX_DB.DANIELHAN.promo_cohort_brand_repeat_by_segment(
+-- CALL SANDBOX_DB.DANIELHAN.a_20260506_c0eb08(
 --     '5ae514c3-332d-4668-b654-862d95cf755e,16998f0f-578d-411b-8021-eb278004f772,381681f9-6c43-4d5a-81d3-13495fec75de',
 --     564770,
 --     '2025-08-05'::DATE,
@@ -65,7 +65,7 @@ USE WAREHOUSE DEVELOPER_XL_WH;
 -- );
 ----------------------------------------------------------------------------
 
-CREATE OR REPLACE PROCEDURE SANDBOX_DB.DANIELHAN.promo_cohort_brand_repeat_by_segment(
+CREATE OR REPLACE PROCEDURE SANDBOX_DB.DANIELHAN.a_20260506_c0eb08(
     v_promo_campaign_ids   STRING,
     v_entity_brand_id      BIGINT,
     v_cohort_window_start  DATE,

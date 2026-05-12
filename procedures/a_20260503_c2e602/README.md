@@ -1,4 +1,4 @@
-# multi_tactic_combo_ntb_conversion
+# a_20260503_c2e602
 
 ## Overview
 
@@ -134,7 +134,7 @@ which is the form most useful for media-mix conversations.
 ## Usage
 
 ```sql
-CALL multi_tactic_combo_ntb_conversion(
+CALL a_20260503_c2e602(
     45,                                          -- v_account_id
     '717500bd-e82b-4438-a8a0-aa42dec1183b',      -- v_account_uuid
     564770,                                      -- v_entity_brand_id

@@ -11,7 +11,7 @@ Each chart is a bar+line combo on twin axes:
     Brand Repeat Sales ($).
 
 Data is loaded by CALLing
-SANDBOX_DB.DANIELHAN.promo_cohort_brand_repeat_by_segment via
+SANDBOX_DB.DANIELHAN.a_20260506_c0eb08 via
 instaquery (no CSV dependency at runtime).
 """
 
@@ -228,7 +228,7 @@ def render_chart(
     # result_type=list because Snowflake returns CALL results in JSON
     # format, which breaks fetch_pandas_all() on recent connector versions.
     sql = (
-        "CALL SANDBOX_DB.DANIELHAN.promo_cohort_brand_repeat_by_segment("
+        "CALL SANDBOX_DB.DANIELHAN.a_20260506_c0eb08("
         f"'{v_promo_campaign_ids}', "
         f"{int(v_entity_brand_id)}, "
         f"'{v_cohort_window_start}'::DATE, "

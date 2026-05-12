@@ -1,7 +1,7 @@
 """Generated from analyses/q1/chart.ipynb on promotion.
 
 Renders the per-combo NTB conversion rate chart produced by the
-`multi_tactic_combo_ntb_conversion` stored procedure. Loads data via
+`a_20260503_c2e602` stored procedure. Loads data via
 `iq.query("CALL ...")` so any future case can call this without ever
 opening a notebook or staging a CSV.
 """
@@ -141,7 +141,7 @@ def _build_call(
     v_min_combo_users,
 ):
     return (
-        "CALL SANDBOX_DB.DANIELHAN.multi_tactic_combo_ntb_conversion("
+        "CALL SANDBOX_DB.DANIELHAN.a_20260503_c2e602("
         f"{int(v_account_id)}, "
         f"{_sql_quote(v_account_uuid)}, "
         f"{int(v_entity_brand_id)}, "
@@ -186,7 +186,7 @@ def render_chart(
     v_account_id, v_account_uuid, v_entity_brand_id, v_country_id,
     v_window_start, v_window_end, v_suas_promotion_group_ids,
     v_min_combo_users
-        Forwarded directly to the `multi_tactic_combo_ntb_conversion`
+        Forwarded directly to the `a_20260503_c2e602`
         stored procedure. Dates may be passed as strings ('YYYY-MM-DD')
         or `datetime.date`. `v_suas_promotion_group_ids` is an iterable
         of UUID strings (pass `[]` to disable the SUAS dimension).
@@ -232,7 +232,7 @@ def render_chart(
 
     if df.empty:
         raise ValueError(
-            "multi_tactic_combo_ntb_conversion returned no rows — check "
+            "a_20260503_c2e602 returned no rows — check "
             "that the account / brand / window / SUAS group ids resolve "
             "to actual exposure, and that v_min_combo_users isn't set "
             "above every combo's exposed_user_count."

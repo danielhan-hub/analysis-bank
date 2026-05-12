@@ -8,7 +8,7 @@ Layout (matches the q2b reference PNG):
   - Cumulative ROAS line   → kale, with `$x.x` value labels at each point
   - Right-side ROAS axis hidden; values are labelled inline on the line.
 
-Data is loaded by CALLing SANDBOX_DB.DANIELHAN.sp_cumulative_roas_by_clicker_cohort
+Data is loaded by CALLing SANDBOX_DB.DANIELHAN.a_20260506_065c82
 through instaquery — no CSV dependency.
 """
 
@@ -169,7 +169,7 @@ def render_chart(
     # --- Pull data via the stored procedure (fully qualified — iq.get_conn
     # uses its own session context and won't honor any USE SCHEMA directive). ---
     sql = (
-        "CALL SANDBOX_DB.DANIELHAN.sp_cumulative_roas_by_clicker_cohort("
+        "CALL SANDBOX_DB.DANIELHAN.a_20260506_065c82("
         f"'{v_campaign_ids}', "
         f"'{v_chart_start}'::DATE, "
         f"'{v_chart_end}'::DATE, "

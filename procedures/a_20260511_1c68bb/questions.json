@@ -1,0 +1,15 @@
+{
+  "summary": "SP cumulative ROAS combo chart (cum sales/spend bars + cum ROAS line) by date bucket for a clicker cohort. Output: bucket × {sales,spend,cum_sales,cum_spend,cum_roas}. Swap cohort CTE, bucket cadence, or cohort window.",
+  "questions": [
+    "What's the cumulative ROAS over time for users who clicked an account's SP campaigns during a cohort window?",
+    "Show cumulative SP sales, spend, and ROAS by quarter for an account's SP clicker cohort across the chart window.",
+    "SP cumulative ROAS combo chart: bars for cumulative sales and spend, line for cumulative ROAS, by quarter for a clicker cohort.",
+    "Cumulative SP ROAS by month for a clicker cohort over a 6-month chart window (swap quarter bucket → month bucket).",
+    "Bi-weekly cumulative SP sales, spend, and ROAS curve for a clicker cohort (swap quarter bucket → week bucket).",
+    "Cumulative ROAS for users acquired through SP (NTB-via-SP cohort) in a cohort window, tracked across the chart window (swap clicker cohort → NTB-acquired cohort).",
+    "Cumulative sales, spend, and ROAS by month for a first-touch SP buyer cohort (swap clicker cohort → first-touch SP buyer cohort).",
+    "If we acquire users via SP clicks in only the first 30 days, what's their cumulative ROAS by month over the next 6 months? (swap cohort window → first 30 days; swap quarter bucket → month bucket).",
+    "Cumulative ROAS payback curve over time for an SP cohort — when does it cross break-even?",
+    "NTB-acquired-via-SP cohort, monthly cumulative ROAS over a 6-month observation window (swap clicker cohort → NTB cohort; swap quarter bucket → month bucket)."
+  ]
+}
