@@ -1,4 +1,4 @@
-# sp_cumulative_roas_by_clicker_cohort
+# a_20260506_065c82
 
 ## Overview
 
@@ -146,7 +146,7 @@ fig = render_chart(
 The procedure is also callable directly:
 
 ```sql
-CALL SANDBOX_DB.DANIELHAN.sp_cumulative_roas_by_clicker_cohort(
+CALL SANDBOX_DB.DANIELHAN.a_20260506_065c82(
     '412001,412002,412015',
     '2026-01-01'::DATE,
     '2026-06-30'::DATE,

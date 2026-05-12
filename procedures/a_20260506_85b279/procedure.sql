@@ -3,7 +3,7 @@ USE SCHEMA SANDBOX_DB.DANIELHAN;
 USE WAREHOUSE DEVELOPER_XL_WH;
 
 ----------------------------------------------------------------------
--- a_20260506_85b279 — brand_cohort_opportunity_analysis
+-- a_20260506_85b279 — a_20260506_85b279
 --
 -- Among repeat category buyers in the period, classify each user by
 -- their share of category orders that contained the input brand:
@@ -34,11 +34,11 @@ USE WAREHOUSE DEVELOPER_XL_WH;
 --                                     (default 2 = "repeat buyer")
 --
 -- SAMPLE CALL:
--- CALL SANDBOX_DB.DANIELHAN.brand_cohort_opportunity_analysis(
+-- CALL SANDBOX_DB.DANIELHAN.a_20260506_85b279(
 --     '564770', '598,869', '2026-01-01'::DATE, '2026-03-31'::DATE, 840, 2);
 ----------------------------------------------------------------------
 
-CREATE OR REPLACE PROCEDURE SANDBOX_DB.DANIELHAN.brand_cohort_opportunity_analysis(
+CREATE OR REPLACE PROCEDURE SANDBOX_DB.DANIELHAN.a_20260506_85b279(
     v_brand_ids            VARCHAR,
     v_category_ids         VARCHAR,
     v_start_date           DATE,
@@ -144,5 +144,5 @@ END;
 $$;
 
 -- SAMPLE CALL:
--- CALL SANDBOX_DB.DANIELHAN.brand_cohort_opportunity_analysis(
+-- CALL SANDBOX_DB.DANIELHAN.a_20260506_85b279(
 --     '564770', '598,869', '2026-01-01'::DATE, '2026-03-31'::DATE, 840, 2);

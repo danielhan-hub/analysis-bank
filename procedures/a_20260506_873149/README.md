@@ -171,7 +171,7 @@ narrative.
 
 ## Sample Call
 ```sql
-CALL SANDBOX_DB.DANIELHAN.ad_driven_cohort_brand_repeat_by_segment(
+CALL SANDBOX_DB.DANIELHAN.a_20260506_873149(
     '5ae514c3-332d-4668-b654-862d95cf755e,16998f0f-578d-411b-8021-eb278004f772,381681f9-6c43-4d5a-81d3-13495fec75de',
     564770,            -- Vital Farms
     '2025-10-01'::DATE,

@@ -1,7 +1,7 @@
 """Generated from analyses/q5_ntb_opp/chart.ipynb on promotion.
 
 Renders a single 100% stacked-column composition chart from the result
-of SANDBOX_DB.DANIELHAN.brand_cohort_opportunity_analysis. Five cohort
+of SANDBOX_DB.DANIELHAN.a_20260506_85b279. Five cohort
 segments stacked bottom-to-top, focal cohort (default Competitor
 Loyalist — the NTB opportunity pool) highlighted in IC_GREEN.
 
@@ -177,7 +177,7 @@ def render_chart(
     try:
         cur = conn.cursor()
         cur.execute(
-            "CALL SANDBOX_DB.DANIELHAN.brand_cohort_opportunity_analysis("
+            "CALL SANDBOX_DB.DANIELHAN.a_20260506_85b279("
             f"'{v_brand_ids}', '{v_category_ids}', "
             f"'{v_start_date}'::DATE, '{v_end_date}'::DATE, "
             f"{int(v_country_id)}, {int(v_min_category_orders)});"

@@ -28,7 +28,7 @@ USE SCHEMA SANDBOX_DB.DANIELHAN;
 --   - Combos with fewer than v_min_combo_users exposed users are suppressed.
 --
 -- SAMPLE CALL:
---   CALL SANDBOX_DB.DANIELHAN.multi_tactic_combo_ntb_conversion(
+--   CALL SANDBOX_DB.DANIELHAN.a_20260503_c2e602(
 --       45,                                        -- v_account_id
 --       '717500bd-e82b-4438-a8a0-aa42dec1183b',    -- v_account_uuid
 --       564770,                                    -- v_entity_brand_id
@@ -43,7 +43,7 @@ USE SCHEMA SANDBOX_DB.DANIELHAN;
 --       100                                        -- v_min_combo_users (default 100)
 --   );
 
-CREATE OR REPLACE PROCEDURE SANDBOX_DB.DANIELHAN.multi_tactic_combo_ntb_conversion(
+CREATE OR REPLACE PROCEDURE SANDBOX_DB.DANIELHAN.a_20260503_c2e602(
     v_account_id                BIGINT,
     v_account_uuid              VARCHAR,
     v_entity_brand_id           NUMBER,

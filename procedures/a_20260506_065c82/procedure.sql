@@ -3,7 +3,7 @@ USE SCHEMA SANDBOX_DB.DANIELHAN;
 USE WAREHOUSE DEVELOPER_XL_WH;
 
 ----------------------------------------------------------------------------
--- Procedure: SANDBOX_DB.DANIELHAN.sp_cumulative_roas_by_clicker_cohort
+-- Procedure: SANDBOX_DB.DANIELHAN.a_20260506_065c82
 --
 -- Purpose: Monthly cumulative SP ROAS for a *fixed cohort* of users who
 --          clicked on a target set of SP campaigns during a defined
@@ -27,7 +27,7 @@ USE WAREHOUSE DEVELOPER_XL_WH;
 -- v_chart_end so every clicker in the window is included.
 --
 -- SAMPLE CALL:
--- CALL SANDBOX_DB.DANIELHAN.sp_cumulative_roas_by_clicker_cohort(
+-- CALL SANDBOX_DB.DANIELHAN.a_20260506_065c82(
 --     '266584,297686,311207',
 --     '2026-01-01'::DATE,
 --     '2026-04-30'::DATE,
@@ -35,7 +35,7 @@ USE WAREHOUSE DEVELOPER_XL_WH;
 -- );
 ----------------------------------------------------------------------------
 
-CREATE OR REPLACE PROCEDURE SANDBOX_DB.DANIELHAN.sp_cumulative_roas_by_clicker_cohort(
+CREATE OR REPLACE PROCEDURE SANDBOX_DB.DANIELHAN.a_20260506_065c82(
     v_campaign_ids       STRING,
     v_chart_start        DATE,
     v_chart_end          DATE,

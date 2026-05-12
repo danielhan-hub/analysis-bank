@@ -12,7 +12,7 @@ The chart is a bar+line combo on twin axes:
     Brand Repeat Sales ($).
 
 Data is loaded by CALLing
-SANDBOX_DB.DANIELHAN.ad_driven_cohort_brand_repeat_by_segment via
+SANDBOX_DB.DANIELHAN.a_20260506_873149 via
 instaquery (no CSV dependency at runtime).
 """
 
@@ -236,7 +236,7 @@ def render_chart(
     # rather than relying on iq.query's result_type, which changed behaviour
     # across instaquery versions (tuples vs dicts).
     sql = (
-        "CALL SANDBOX_DB.DANIELHAN.ad_driven_cohort_brand_repeat_by_segment("
+        "CALL SANDBOX_DB.DANIELHAN.a_20260506_873149("
         f"'{v_promo_campaign_ids}', "
         f"{int(v_entity_brand_id)}, "
         f"'{v_cohort_window_start}'::DATE, "
