@@ -547,13 +547,14 @@ async def aretrieve(
             "fitness skipped". Used by the eval harness.
         skip_hyde: bypass Stage A. Speeds the eval harness up; in
             production breakdown_ask leaves it on.
-        force_pick_one: the panel jury still runs on the full top-K. The
-            ONLY effect is that the winning candidate is marked
-            ``is_jury_winner=True`` and downstream plan_analysis is
-            instructed to REUSE it unconditionally. The jury's per-
-            candidate STRONG/WEAK/REJECT labels are still emitted so
-            the operator can audit the gap (e.g., "REUSEd a WEAK
-            candidate because force_pick_one was set").
+        force_pick_one: the panel jury still runs on the full top-K
+            with the same rubric. The flag's two effects: (1) the
+            winning candidate is marked ``is_jury_winner=True``, and
+            (2) the full candidate list is returned (REJECTs included)
+            so the operator can audit the gap next to the forced pick
+            (e.g., "REUSEd a WEAK candidate because force_pick_one was
+            set"). Downstream plan_analysis is then instructed to
+            REUSE the winner unconditionally.
         lenient: when True (default), append a leniency block to the
             jury system prompt so metric-formula differences alone do
             not block STRONG.
