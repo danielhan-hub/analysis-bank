@@ -14,9 +14,11 @@ from analysis_bank.features import (
     retrieve,
     upsert_chart_eligible,
 )
+from analysis_bank.curation import AddQuestionResult, add_question
 from analysis_bank.receiver import AnalysisBankReceiver
 
 __all__ = [
+    "AddQuestionResult",
     "AnalysisBankReceiver",
     "CANDIDATES_DIR",
     "Candidate",
@@ -24,6 +26,7 @@ __all__ = [
     "INSPECTOR_PROMPT_PATH",
     "PROCEDURES_DIR",
     "PROCEDURES_INDEX_PATH",
+    "add_question",
     "aretrieve",
     "compute_and_persist",
     "load_chart_eligibility",

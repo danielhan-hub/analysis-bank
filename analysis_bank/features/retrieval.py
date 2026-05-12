@@ -17,22 +17,30 @@
 
     Stage D — Cross-encoder rerank (top 5)
         Union the two top-20 lists, dedupe, cross-encoder rank with
-        BGE-reranker-large.
+        BGE-reranker-large. The rerank pair is
+        ``(question, summary + top-3 paraphrases)`` — pairing against
+        the summary alone misses paraphrase-level signal that the
+        questions.json was authored to carry.
 
-    Stage E — LLM fitness (final filter)
-        For each of the top 5, an LLM call reads the procedure README
-        and the question spec and emits {STRONG | WEAK | REJECT} plus
-        a one-line rationale.
+    Stage E — LLM panel jury (final filter)
+        ONE LLM call reads the question recap and EVERY top-K
+        candidate's README + procedure.sql, then emits per-candidate
+        STRONG/WEAK/REJECT labels AND nominates a single winner. The
+        panel design lets the jury compare candidates side-by-side
+        instead of judging in isolation, which is where single-pass
+        per-candidate fitness used to drift.
 
-The output is a list of `Candidate(analysis_id, chart_eligible,
-fitness_label, rationale, ...)` ready for breakdown_ask to write into
-questions_to_answer.md.
+The output is a list of ``Candidate(analysis_id, chart_eligible,
+fitness_label, rationale, is_jury_winner, ...)`` ready for breakdown_ask
+to write into questions_to_answer.md.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -68,6 +76,7 @@ class Candidate:
     rerank_score: float | None = None
     matched_categories: list[str] = field(default_factory=list)
     path_to_readme: Path | None = None
+    is_jury_winner: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -222,16 +231,40 @@ def _build_query_vector(
 # ---------------------------------------------------------------------------
 
 
-def _readme_summary(procedures_dir: Path, aid: str, max_chars: int = 800) -> str:
-    """Pull a short summary string for the cross-encoder input."""
+def _rerank_input(
+    procedures_dir: Path,
+    aid: str,
+    *,
+    n_paraphrases: int = 3,
+    max_chars: int = 1600,
+) -> str:
+    """Build the candidate-side string for the cross-encoder pair.
+
+    History: this used to return only ``questions.json["summary"]``
+    (800 chars). That left the rerank starved of paraphrase signal —
+    Mary Ruth Run 7 Q1 picked the wrong procedure because the winning
+    procedure's summary was abstract ("by date bucket") while the
+    losing procedure's summary contained the exact lexical match
+    ("months-since-acquisition") even though its cadence was wrong.
+
+    Including a few paraphrases gives the cross-encoder the same
+    surface-form coverage that questions.json was authored to provide
+    for dense recall. Falls back to README first chars if questions.json
+    is missing or unreadable.
+    """
     qjson = procedures_dir / aid / "questions.json"
     if qjson.exists():
         try:
-            import json
             data = json.loads(qjson.read_text(encoding="utf-8"))
             summary = (data.get("summary") or "").strip()
-            if summary:
-                return summary[:max_chars]
+            paraphrases = [
+                q.strip()
+                for q in (data.get("questions") or [])
+                if isinstance(q, str) and q.strip()
+            ][:n_paraphrases]
+            parts = [p for p in [summary, *paraphrases] if p]
+            if parts:
+                return "\n".join(parts)[:max_chars]
         except Exception:
             pass
     readme = procedures_dir / aid / "README.md"
@@ -249,55 +282,89 @@ def _rerank(
     """Cross-encoder rerank. Identity ordering if there's nothing to rank."""
     if not candidate_ids:
         return []
-    pairs = [(question_text, _readme_summary(procedures_dir, aid)) for aid in candidate_ids]
+    pairs = [(question_text, _rerank_input(procedures_dir, aid)) for aid in candidate_ids]
     scores = _rerank_model().predict(pairs).tolist()
     ranked = sorted(zip(candidate_ids, scores), key=lambda t: -t[1])
     return ranked[:top_k]
 
 
 # ---------------------------------------------------------------------------
-# Stage E — LLM fitness
+# Stage E — LLM panel jury
 # ---------------------------------------------------------------------------
 
 
-_FITNESS_SYSTEM_PROMPT = """\
-You judge whether a bank-retrieved analysis procedure can answer a given
-question shape via *chart-pattern reuse*.
+_PANEL_JURY_SYSTEM_PROMPT = """\
+You are a panel jury that judges whether bank-retrieved analysis
+procedures can answer a given question via *chart-pattern reuse*. You
+read the question recap and EVERY shortlisted candidate's README and
+procedure.sql side-by-side, then emit per-candidate labels and
+nominate a single winner.
 
-Read the question spec and the procedure README, then emit exactly one of:
+# Output format (STRICT — downstream parsers depend on this layout)
 
-    STRONG — chart family AND output table schema both fit the question.
-             That means the procedure's chart pattern (the visual it
-             produces) is the right answer for this question, AND the
-             output table the SQL emits has the same column shape and
-             grain (e.g. cohort × time-bucket wide table with cumulative
-             metrics) the chart contract expects. Cohort definition,
-             time-axis labels, filter axes, and upstream CTEs may need
-             parameter swaps or one-for-one CTE replacements (e.g. swap
-             clicker-cohort CTE for an NTB-cohort CTE) — those are still
-             STRONG, because chart.py operates on the output schema, not
-             on which CTE produced it. The README's "When to use" /
-             "Question shapes this procedure answers" sections are
-             authoritative on what swaps are in-scope.
-    WEAK   — chart family fits but the output table schema needs new
-             columns, fundamentally different grain, or a restructured
-             aggregation that the existing chart.py cannot render
-             without changes. Reuse-with-parameter-swap is insufficient.
-    REJECT — different chart family / different analytical idea
-             altogether; retrieving it was a recall mistake.
+```
+## Question recap
+<one-paragraph restatement of the question, in your own words. Quote
+ the literal retrieval spec at the end so the per-candidate analysis
+ below can be checked against it.>
 
-The bar for STRONG is "could a competent SQL engineer reuse this
-procedure by swapping parameters and at most a single upstream CTE,
-keeping the output table schema and chart.py untouched?" If yes →
-STRONG. If they would need to add columns, change the grain of the
-output table, or rewrite the aggregation logic → WEAK.
+## Per-candidate analysis
 
-Output format (one line, no preamble, no markdown):
+### <analysis_id>
+- Label: STRONG | WEAK | REJECT
+- Output schema: <does the SQL emit the columns/grain the question needs?>
+- Chart family: <does the chart-pattern match the question's required visual?>
+- Parameter shape: <does the SAMPLE CALL accept the IDs/dates the question carries?>
+- Cohort/CTE swap distance: <how surgical would the swap be — drop-in CTE replacement, or rewrite?>
+- Rationale: <one sentence summarizing the fit>
 
-    LABEL — one-sentence rationale citing the schema/chart fit.
+(repeat for every candidate)
+
+## Decision
+- Winner: <analysis_id>
+- Why it beats the others: <2–4 sentences comparing the winner to the runners-up on the axes above>
+```
+
+# Label rules
+
+STRONG — chart family AND output table schema both fit the question.
+         Parameter swaps and one-for-one CTE replacements are still
+         STRONG; chart.py operates on the output schema, not on which
+         CTE produced it.
+WEAK   — chart family fits but the output schema needs new columns,
+         a fundamentally different grain, or a restructured aggregation.
+         Reuse-with-parameter-swap is insufficient.
+REJECT — different chart family / different analytical idea altogether.
+
+# Winner rules
+
+You MUST nominate exactly one winner — even when every candidate is
+WEAK. The winner is the candidate that requires the smallest delta to
+answer the question. Downstream code uses the winner as the REUSE pick;
+the per-candidate label remains the truth about how clean that reuse
+is. Do NOT decline to pick.
+
+# Comparison axes (use these to break ties between similarly-labelled candidates)
+
+1. Parameter shape match — a procedure whose SAMPLE CALL accepts the
+   IDs the question carries (e.g., account_id when the plan resolves
+   campaigns dynamically) beats one that requires upstream resolution
+   (e.g., a hardcoded campaign_ids comma-separated list).
+2. Default cadence match — a procedure whose default bucket cadence
+   matches the question's required cadence beats one that requires
+   parameter swap, even if both support swaps.
+3. Cohort-CTE swap distance — a procedure whose existing cohort CTE
+   matches the question's cohort definition beats one that needs a
+   one-for-one CTE replacement.
+4. Output column literalness — a procedure whose output column names
+   match what the question asks beats one that requires renaming.
+
+When axes disagree, the parameter-shape axis wins (it's the most
+expensive mismatch to bridge in downstream SQL).
 """
 
 _LENIENCY_BLOCK = """
+
 LENIENCY MODE IS ON (default).
 Do NOT downgrade to WEAK or REJECT solely because the procedure's metric
 formula differs from the question's phrasing. Metric-domain compatibility
@@ -310,26 +377,65 @@ Only downgrade to WEAK for: (a) fundamentally different chart family, or
 """
 
 
-async def _fitness_one(
+def _read_proc_sql(procedures_dir: Path, aid: str, max_chars: int = 8000) -> str:
+    p = procedures_dir / aid / "procedure.sql"
+    if not p.exists():
+        return "(procedure.sql not found)"
+    return p.read_text(encoding="utf-8", errors="replace")[:max_chars]
+
+
+def _read_proc_readme(procedures_dir: Path, aid: str, max_chars: int = 6000) -> str:
+    p = procedures_dir / aid / "README.md"
+    if not p.exists():
+        return "(README.md not found)"
+    return p.read_text(encoding="utf-8", errors="replace")[:max_chars]
+
+
+async def _panel_jury(
     question_text: str,
-    aid: str,
-    readme_text: str,
+    candidate_aids: list[str],
+    procedures_dir: Path,
+    *,
     lenient: bool = True,
-) -> tuple[FitnessLabel, str]:
-    """Run the fitness check for a single (question, procedure) pair."""
+) -> tuple[dict[str, tuple[FitnessLabel, str]], str | None, str]:
+    """Run a single panel-jury LLM call across every candidate.
+
+    Returns:
+        per_candidate: {aid: (label, one-line rationale)}
+        winner_aid:    the nominated winner (or None if parsing failed)
+        verbose_text:  the jury's full markdown output (for _debug log)
+    """
+    if not candidate_aids:
+        return ({}, None, "")
+
     try:
         from claude_agent_sdk import ClaudeAgentOptions, query  # type: ignore
     except ImportError:
-        return ("WEAK", "claude_agent_sdk not installed; fitness check skipped")
+        # SDK unavailable: emit a degraded result so callers don't hard-fail.
+        # Picks the first candidate as winner, labels everything WEAK.
+        per = {aid: ("WEAK", "claude_agent_sdk not installed; jury skipped") for aid in candidate_aids}
+        return (per, candidate_aids[0], "(jury skipped — SDK unavailable)")
+
+    candidate_blocks: list[str] = []
+    for aid in candidate_aids:
+        readme = _read_proc_readme(procedures_dir, aid)
+        sql = _read_proc_sql(procedures_dir, aid)
+        candidate_blocks.append(
+            f"### {aid}\n\n"
+            f"#### README.md\n```markdown\n{readme}\n```\n\n"
+            f"#### procedure.sql\n```sql\n{sql}\n```\n"
+        )
 
     prompt = (
-        f"## Question spec\n{question_text.strip()}\n\n"
-        f"## Procedure README ({aid})\n{readme_text.strip()[:4000]}\n\n"
-        f"Emit `LABEL — rationale` per the rules in your system prompt."
+        f"## Question (verbatim retrieval spec)\n\n{question_text.strip()}\n\n"
+        f"## Candidates ({len(candidate_aids)})\n\n"
+        + "\n\n---\n\n".join(candidate_blocks)
+        + "\n\nProduce the panel verdict per the format in your system prompt."
     )
+
     captured = ""
     sdk_env = {"CLAUDECODE": ""}
-    system_prompt = _FITNESS_SYSTEM_PROMPT + _LENIENCY_BLOCK if lenient else _FITNESS_SYSTEM_PROMPT
+    system_prompt = _PANEL_JURY_SYSTEM_PROMPT + (_LENIENCY_BLOCK if lenient else "")
     async for message in query(
         prompt=prompt,
         options=ClaudeAgentOptions(
@@ -343,19 +449,67 @@ async def _fitness_one(
     ):
         if hasattr(message, "result") and message.result:
             captured = message.result
-    return _parse_fitness(captured)
+
+    verbose = (captured or "").strip()
+    per_candidate, winner = _parse_panel_output(verbose, candidate_aids)
+    return (per_candidate, winner, verbose)
 
 
-def _parse_fitness(raw: str) -> tuple[FitnessLabel, str]:
-    raw = (raw or "").strip()
+def _parse_panel_output(
+    raw: str,
+    candidate_aids: list[str],
+) -> tuple[dict[str, tuple[FitnessLabel, str]], str | None]:
+    """Parse the panel jury's markdown output.
+
+    Tolerant: missing labels default to WEAK, missing winner returns
+    None (caller falls back to top-rerank). The verbose text is always
+    persisted so an operator can debug parsing misses.
+    """
+    per: dict[str, tuple[FitnessLabel, str]] = {}
+    winner: str | None = None
     if not raw:
-        return ("WEAK", "fitness agent returned no output")
-    first_line = raw.splitlines()[0].strip()
-    for label in ("STRONG", "WEAK", "REJECT"):
-        if first_line.upper().startswith(label):
-            tail = first_line[len(label):].lstrip(" —-:")
-            return (label, tail or "(no rationale)")
-    return ("WEAK", f"unparseable fitness output: {first_line[:200]}")
+        return ({aid: ("WEAK", "jury returned no output") for aid in candidate_aids}, None)
+
+    # Find each candidate's block by `### <aid>` header.
+    for aid in candidate_aids:
+        header = f"### {aid}"
+        idx = raw.find(header)
+        if idx == -1:
+            per[aid] = ("WEAK", "candidate block not found in jury output")
+            continue
+        # Pull the block until the next `### ` or `## ` header.
+        rest = raw[idx + len(header):]
+        next_h3 = rest.find("\n### ")
+        next_h2 = rest.find("\n## ")
+        cuts = [c for c in (next_h3, next_h2) if c != -1]
+        block = rest[: min(cuts)] if cuts else rest
+
+        label: FitnessLabel = "WEAK"
+        rationale = "(no rationale parsed)"
+        for line in block.splitlines():
+            stripped = line.strip().lstrip("-* ").strip()
+            if stripped.lower().startswith("label:"):
+                tail = stripped.split(":", 1)[1].strip().upper()
+                for L in ("STRONG", "WEAK", "REJECT"):
+                    if tail.startswith(L):
+                        label = L
+                        break
+            elif stripped.lower().startswith("rationale:"):
+                rationale = stripped.split(":", 1)[1].strip() or rationale
+        per[aid] = (label, rationale)
+
+    # Find winner via `Winner: <aid>` line.
+    for line in raw.splitlines():
+        stripped = line.strip().lstrip("-* ").strip()
+        if stripped.lower().startswith("winner:"):
+            tail = stripped.split(":", 1)[1].strip()
+            # Strip backticks/whitespace; the model sometimes formats the id.
+            tail_clean = tail.strip("` ").split()[0] if tail else ""
+            if tail_clean in candidate_aids:
+                winner = tail_clean
+                break
+
+    return (per, winner)
 
 
 # ---------------------------------------------------------------------------
@@ -373,8 +527,12 @@ async def aretrieve(
     require_chart_eligible: bool = False,
     skip_llm_fitness: bool = False,
     skip_hyde: bool = False,
-    force_top_1: bool = False,
+    force_pick_one: bool = False,
     lenient: bool = True,
+    run_dir: Path | None = None,
+    question_index: int | None = None,
+    # Deprecated alias — kept for one release cycle.
+    force_top_1: bool | None = None,
 ) -> list[Candidate]:
     """Run the full hybrid retrieval pipeline.
 
@@ -389,14 +547,38 @@ async def aretrieve(
             "fitness skipped". Used by the eval harness.
         skip_hyde: bypass Stage A. Speeds the eval harness up; in
             production breakdown_ask leaves it on.
-        force_top_1: skip Stage E entirely; return only the top-ranked
-            candidate with fitness_label="FORCED". Overrides lenient.
+        force_pick_one: the panel jury still runs on the full top-K
+            with the same rubric. The flag's two effects: (1) the
+            winning candidate is marked ``is_jury_winner=True``, and
+            (2) the full candidate list is returned (REJECTs included)
+            so the operator can audit the gap next to the forced pick
+            (e.g., "REUSEd a WEAK candidate because force_pick_one was
+            set"). Downstream plan_analysis is then instructed to
+            REUSE the winner unconditionally.
         lenient: when True (default), append a leniency block to the
-            fitness system prompt so metric-formula differences alone do
-            not block STRONG. When False, strict metric matching applies.
+            jury system prompt so metric-formula differences alone do
+            not block STRONG.
+        run_dir: pipeline run directory. When provided, the panel
+            jury's verbose markdown is written to
+            ``run_dir/analyses/_debug/jury_q<n>.md`` for auditability.
+        question_index: 1-based index used in the verbose log filename.
+        force_top_1: DEPRECATED — alias for ``force_pick_one``. Kept for
+            one release; emits a warning if used.
 
     Returns up to ``top_k_rerank`` candidates with fitness labels.
     """
+    # Deprecation shim — accept the old name, prefer the new.
+    if force_top_1 is not None:
+        warnings.warn(
+            "force_top_1 is deprecated; use force_pick_one instead. "
+            "The new name reflects the actual contract: the jury still "
+            "reasons over the full top-K, and the flag only forces "
+            "downstream plan_analysis to commit to the winner.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        force_pick_one = force_pick_one or bool(force_top_1)
+
     if procedures_dir is None:
         import analysis_bank.features.retrieval as _self  # honor monkeypatch
         procedures_dir = _self.PROCEDURES_DIR
@@ -424,21 +606,43 @@ async def aretrieve(
     if not union_ids:
         return []
 
-    # Stage D — Rerank (cap to 1 when force_top_1 to avoid wasted cross-encoder calls)
-    rerank_k = 1 if force_top_1 else top_k_rerank
-    reranked = _rerank(question_text, union_ids, procedures_dir, rerank_k)
+    # Stage D — Rerank (always to top_k_rerank — force_pick_one no longer caps to 1)
+    reranked = _rerank(question_text, union_ids, procedures_dir, top_k_rerank)
+    reranked_aids = [aid for aid, _ in reranked]
 
-    # Stage E — Fitness (skipped entirely when force_top_1)
+    # Stage E — Panel jury (always runs unless skipped by the eval harness)
+    if skip_llm_fitness:
+        per_candidate = {aid: ("WEAK", "fitness skipped") for aid in reranked_aids}
+        winner_aid = reranked_aids[0] if reranked_aids else None
+        verbose = ""
+    else:
+        per_candidate, winner_aid, verbose = await _panel_jury(
+            question_text,
+            reranked_aids,
+            procedures_dir,
+            lenient=lenient,
+        )
+        # If parsing didn't recover a winner, fall back to top-rerank so
+        # downstream never sees a missing pick.
+        if winner_aid is None and reranked_aids:
+            winner_aid = reranked_aids[0]
+            logger.warning(
+                "Panel jury did not nominate a parseable winner; falling "
+                "back to top-rerank candidate %s", winner_aid,
+            )
+
+    # Persist verbose jury output for auditability.
+    if verbose and run_dir is not None:
+        debug_dir = Path(run_dir) / "analyses" / "_debug"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        idx_label = question_index if question_index is not None else "_"
+        out_path = debug_dir / f"jury_q{idx_label}.md"
+        out_path.write_text(verbose, encoding="utf-8")
+
     candidates: list[Candidate] = []
     for aid, rerank_score in reranked:
         readme_path = procedures_dir / aid / "README.md"
-        readme_text = readme_path.read_text(encoding="utf-8", errors="replace") if readme_path.exists() else ""
-        if force_top_1:
-            label, rationale = ("FORCED", "force_top_1=True; fitness bypassed")
-        elif skip_llm_fitness:
-            label, rationale = ("WEAK", "fitness skipped")
-        else:
-            label, rationale = await _fitness_one(question_text, aid, readme_text, lenient=lenient)
+        label, rationale = per_candidate.get(aid, ("WEAK", "no jury verdict"))
         candidates.append(
             Candidate(
                 analysis_id=aid,
@@ -450,12 +654,15 @@ async def aretrieve(
                 rerank_score=rerank_score,
                 matched_categories=sparse_categories.get(aid, []),
                 path_to_readme=readme_path,
+                is_jury_winner=(aid == winner_aid),
             )
         )
 
-    if force_top_1:
-        return candidates  # single FORCED candidate, no REJECT filter
-    return [c for c in candidates if c.fitness_label != "REJECT"]
+    # Under force_pick_one we keep every candidate (so plan_analysis sees
+    # the audit trail next to the winner). Otherwise drop REJECTs.
+    if force_pick_one:
+        return candidates
+    return [c for c in candidates if c.fitness_label != "REJECT" or c.is_jury_winner]
 
 
 def retrieve(

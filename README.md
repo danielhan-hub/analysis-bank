@@ -128,7 +128,7 @@ Delete every candidate folder from `candidates/`. Returns the number deleted.
 2. **Dense recall (BGE-large)** — cosine similarity (max-pool over each procedure's `embeddings.npy`) returns top-`k_dense` analysis_ids.
 3. **Sparse recall (BM25)** — `keyword_index.rank_question` scores the question against `keyword_matrix.csv` (15 curated categories in `features/keywords.yaml`) and returns top-`k_sparse` analysis_ids. The two recall sets are unioned and deduped.
 4. **Cross-encoder rerank (BGE-reranker-large)** — re-scores the union against the question; trims to top-`k_rerank`.
-5. **LLM fitness (Opus)** — judges each survivor as `STRONG`, `WEAK`, or `REJECT` with a one-line rationale. `force_top_1=True` collapses the result to the single best regardless of label; `lenient=False` tightens the rubric.
+5. **Panel jury (Opus)** — reads every survivor's `README.md` + `procedure.sql` side-by-side, restates the question, then emits per-candidate `STRONG` / `WEAK` / `REJECT` labels with rationale and nominates a single winner (`is_jury_winner=True`). `force_pick_one=True` does **not** change the jury's reasoning — every candidate is still judged and returned with its label intact; the flag only binds downstream `plan_analysis` to REUSE the jury's winner. `lenient=False` tightens the rubric.
 
 Optional flags: `require_chart_eligible=True` filters to `chart_eligible` rows (Reuse-Only Mode in `ads_ms_analysis`); `skip_hyde` / `skip_llm_fitness` short-circuit Stages 1 and 5 for offline eval.
 
