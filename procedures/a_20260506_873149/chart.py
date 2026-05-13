@@ -120,8 +120,15 @@ def save_chart(fig, path, *, transparent=True):
 # ============================================================================
 # Internal helper: render one bar+line combo panel from pre-aggregated arrays.
 # ============================================================================
+_UNIT_AXIS_LABEL = {
+    "WEEK":  "Weeks Since Conversion",
+    "MONTH": "Months Since Conversion",
+}
+
+
 def _render_bar_line_panel(
-    weeks,           # list[float] -- bucket end weeks (x-axis ticks)
+    bucket_ends,     # list[float] -- bucket end in chosen unit (x-axis ticks)
+    bucket_unit,     # 'WEEK' or 'MONTH' (echoed from procedure output)
     rate_vals,       # list[float] -- cumulative repeat rate (% scale, e.g. 13.4)
     sales_vals,      # list[float] -- cumulative repeat sales ($)
     output_path,
@@ -131,8 +138,14 @@ def _render_bar_line_panel(
     sales_axis_pad,
     sales_label_y_offset_frac,
 ):
-    x_pos = np.arange(len(weeks))
-    x_labels = [f"{w:g}" for w in weeks]
+    x_pos = np.arange(len(bucket_ends))
+    # Bucket ends are integer-valued by construction (procedure validates the
+    # forward window divides evenly into whole weeks/months); render them as
+    # plain integers, not "1.0", "2.0".
+    x_labels = [f"{int(round(b))}" for b in bucket_ends]
+    x_axis_title = _UNIT_AXIS_LABEL.get(
+        (bucket_unit or "").upper(), "Buckets Since Conversion"
+    )
 
     fig, ax_l = plt.subplots(figsize=figsize)
 
@@ -145,10 +158,10 @@ def _render_bar_line_panel(
     apply_ic_style(ax_l, fig)            # bar+line combo: NO grid on primary
     ax_l.set_xticks(x_pos)
     ax_l.set_xticklabels(x_labels)
-    ax_l.set_xlim(-0.6, len(weeks) - 0.4)
+    ax_l.set_xlim(-0.6, len(bucket_ends) - 0.4)
     ax_l.yaxis.set_major_formatter(FuncFormatter(fmt_pct))
     ax_l.set_ylim(0, max(rate_vals) * rate_axis_pad)
-    ax_l.set_xlabel("Weeks Since Conversion",
+    ax_l.set_xlabel(x_axis_title,
                     fontsize=AXIS_TITLE, fontweight="bold")
     ax_l.set_ylabel("Cumulative Brand Repeat Rate (%)",
                     fontsize=AXIS_TITLE, fontweight="bold",
@@ -201,7 +214,7 @@ def render_chart(
     v_cohort_window_start,
     v_cohort_window_end,
     v_forward_window_days=84,
-    v_bucket_size_days=14,
+    v_bucket_unit="WEEK",
     v_country_id=840,
     v_ntx_lookback_days=182,
     v_include_existing_users=False,
@@ -242,7 +255,7 @@ def render_chart(
         f"'{v_cohort_window_start}'::DATE, "
         f"'{v_cohort_window_end}'::DATE, "
         f"{int(v_forward_window_days)}, "
-        f"{int(v_bucket_size_days)}, "
+        f"'{str(v_bucket_unit).upper()}', "
         f"{int(v_country_id)}, "
         f"{int(v_ntx_lookback_days)}, "
         f"{'TRUE' if v_include_existing_users else 'FALSE'}, "
@@ -260,20 +273,21 @@ def render_chart(
         conn.close()
 
     # Ensure numeric coercion (CALL/JSON path may return Decimal).
-    for col in ("WEEKS_SINCE_CONVERSION", "COHORT_SIZE",
+    for col in ("BUCKET_END", "COHORT_SIZE",
                 "N_REPEATERS_THROUGH_BUCKET", "BRAND_REPEAT_RATE_PCT",
                 "BRAND_REPEAT_SALES_USD"):
         df[col] = pd.to_numeric(df[col])
 
-    weeks = sorted(df["WEEKS_SINCE_CONVERSION"].unique())
+    bucket_unit = str(df["BUCKET_UNIT"].iloc[0]).upper()
+    bucket_ends = sorted(df["BUCKET_END"].unique())
 
     # Pivot wide on segment so we can sum NTB sub-segments together.
     piv = df.pivot(
-        index="WEEKS_SINCE_CONVERSION",
+        index="BUCKET_END",
         columns="SEGMENT",
         values=["N_REPEATERS_THROUGH_BUCKET", "BRAND_REPEAT_SALES_USD",
                 "COHORT_SIZE"],
-    ).reindex(weeks)
+    ).reindex(bucket_ends)
 
     # NTB-combined headline. Fill missing sub-segments with zeros so the
     # function still works if the procedure returned only one of the two.
@@ -298,7 +312,8 @@ def render_chart(
     ).astype(float)
 
     fig = _render_bar_line_panel(
-        weeks=weeks,
+        bucket_ends=bucket_ends,
+        bucket_unit=bucket_unit,
         rate_vals=list(ntb_rate),
         sales_vals=list(ntb_sales),
         output_path=output_path,
@@ -328,7 +343,7 @@ if __name__ == "__main__":
         v_cohort_window_start="2025-10-01",
         v_cohort_window_end="2025-12-31",
         v_forward_window_days=84,
-        v_bucket_size_days=14,
+        v_bucket_unit="WEEK",
         v_country_id=840,
         v_ntx_lookback_days=182,
         v_include_existing_users=False,
