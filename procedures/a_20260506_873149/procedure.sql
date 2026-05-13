@@ -7,8 +7,9 @@ USE WAREHOUSE DEVELOPER_XL_WH;
 --
 -- Purpose: For users whose FIRST ad-driven brand purchase falls in a cohort
 --   window, track cumulative brand repeat behavior over a configurable
---   forward observation window, bucketed at a configurable cadence
---   (default 12 weeks / 2-week buckets).
+--   forward observation window, bucketed at WEEKLY or MONTHLY cadence as
+--   selected by v_bucket_unit (default 12-week forward window with weekly
+--   buckets).
 --
 --   "Ad-driven" is the UNION of two configurable cohort sources:
 --     (A) SP + Display attribution: rows in
@@ -46,6 +47,17 @@ USE WAREHOUSE DEVELOPER_XL_WH;
 --   Existing Users segment is emitted. Set FALSE to restrict the output
 --   to NTB-only segments (q2b convention).
 --
+--   Bucket cadence is fixed to whole weeks or whole months, not arbitrary
+--   day counts -- the chart x-axis reads in clean integer units (Week 1,
+--   2, ... or Month 1, 2, ...) instead of fractional weeks like "2.86".
+--   v_bucket_unit selects the unit:
+--     - 'WEEK'  -> internal bucket size = 7 days  (default)
+--     - 'MONTH' -> internal bucket size = 30 days (calendar approximation)
+--   v_forward_window_days MUST be a positive multiple of the resolved
+--   bucket size (7 for WEEK, 30 for MONTH); the procedure raises
+--   PARTIAL_BUCKET_WINDOW otherwise so partial-window data loss is
+--   loud, not silent.
+--
 --   Two metrics per (segment, bucket), both cumulative through end-of-bucket:
 --     - brand_repeat_rate_pct    = (cohort users in segment with >=1 brand
 --                                   order in days 0..bucket_end_day) /
@@ -59,14 +71,21 @@ USE WAREHOUSE DEVELOPER_XL_WH;
 --   brand order still counts as a repeat).
 --
 -- Output shape: one row per (segment, bucket). With defaults
---   (v_forward_window_days=84, v_bucket_size_days=14,
---   v_include_existing_users=TRUE) -> 18 rows
---   (3 segments x 6 week-end buckets at weeks 2, 4, 6, 8, 10, 12).
---   With v_include_existing_users=FALSE -> 12 rows (q2b shape).
+--   (v_forward_window_days=84, v_bucket_unit='WEEK',
+--   v_include_existing_users=TRUE) -> 36 rows
+--   (3 segments x 12 weekly buckets at weeks 1..12).
+--   With v_include_existing_users=FALSE -> 24 rows.
+--   With v_bucket_unit='MONTH' and v_forward_window_days=120
+--   (v_include_existing_users=TRUE) -> 12 rows (3 segments x 4 monthly
+--   buckets at months 1..4).
 --
 -- Constraints:
---   * v_forward_window_days SHOULD be a multiple of v_bucket_size_days;
---     otherwise the last partial bucket is dropped from the grid.
+--   * v_bucket_unit must be 'WEEK' or 'MONTH' (case-insensitive). Anything
+--     else raises INVALID_BUCKET_UNIT.
+--   * v_forward_window_days must be a positive multiple of the bucket
+--     unit's day-size (7 for WEEK, 30 for MONTH); otherwise raises
+--     PARTIAL_BUCKET_WINDOW. This keeps the chart x-axis on whole units
+--     and refuses to silently drop a partial trailing bucket.
 --   * v_promo_campaign_ids is a comma-separated list of nexus_coupons
 --     campaign_id UUIDs (no spaces). The procedure resolves them inline
 --     to discount_policy_ids - no hardcoded discount_policy_id list.
@@ -86,7 +105,7 @@ USE WAREHOUSE DEVELOPER_XL_WH;
 --     '2025-10-01'::DATE,
 --     '2025-12-31'::DATE,
 --     84,
---     14,
+--     'WEEK',
 --     840,
 --     182,
 --     FALSE,
@@ -95,13 +114,21 @@ USE WAREHOUSE DEVELOPER_XL_WH;
 -- );
 ----------------------------------------------------------------------------
 
+-- The signature changed (position 6: INTEGER -> VARCHAR), so an in-place
+-- CREATE OR REPLACE would leave the old overload behind. Drop the prior
+-- INTEGER-bucket signature explicitly first.
+DROP PROCEDURE IF EXISTS SANDBOX_DB.DANIELHAN.a_20260506_873149(
+    VARCHAR, NUMBER, DATE, DATE, NUMBER, NUMBER, NUMBER, NUMBER,
+    BOOLEAN, BOOLEAN, BOOLEAN
+);
+
 CREATE OR REPLACE PROCEDURE SANDBOX_DB.DANIELHAN.a_20260506_873149(
     v_promo_campaign_ids              STRING,
     v_entity_brand_id                 BIGINT,
     v_cohort_window_start             DATE,
     v_cohort_window_end               DATE,
     v_forward_window_days             INTEGER  DEFAULT 84,
-    v_bucket_size_days                INTEGER  DEFAULT 14,
+    v_bucket_unit                     STRING   DEFAULT 'WEEK',
     v_country_id                      BIGINT   DEFAULT 840,
     v_ntx_lookback_days               INTEGER  DEFAULT 182,
     v_include_existing_users          BOOLEAN  DEFAULT TRUE,
@@ -110,7 +137,8 @@ CREATE OR REPLACE PROCEDURE SANDBOX_DB.DANIELHAN.a_20260506_873149(
 )
 RETURNS TABLE(
     segment                       VARCHAR,
-    weeks_since_conversion        FLOAT,
+    bucket_unit                   VARCHAR,
+    bucket_end                    FLOAT,
     cohort_size                   NUMBER,
     n_repeaters_through_bucket    NUMBER,
     brand_repeat_rate_pct         FLOAT,
@@ -120,7 +148,33 @@ LANGUAGE SQL
 AS
 $$
 DECLARE
-    res RESULTSET DEFAULT (
+    -- Resolved bucket size in days (7 for WEEK, 30 for MONTH). Set in BEGIN.
+    v_bucket_size_days   INTEGER;
+    -- Normalised unit label echoed in the output column.
+    v_bucket_unit_norm   VARCHAR;
+    invalid_bucket_unit       EXCEPTION (-20001,
+        'v_bucket_unit must be ''WEEK'' or ''MONTH'' (case-insensitive).');
+    partial_bucket_window     EXCEPTION (-20002,
+        'v_forward_window_days must be a positive multiple of the bucket unit''s day-size (7 for WEEK, 30 for MONTH).');
+    res RESULTSET;
+BEGIN
+    -- Resolve bucket_unit -> bucket_size_days (validation guard rails below).
+    v_bucket_unit_norm := UPPER(:v_bucket_unit);
+    v_bucket_size_days := CASE v_bucket_unit_norm
+        WHEN 'WEEK'  THEN 7
+        WHEN 'MONTH' THEN 30
+        ELSE NULL
+    END;
+    IF (v_bucket_size_days IS NULL) THEN
+        RAISE invalid_bucket_unit;
+    END IF;
+    IF (:v_forward_window_days IS NULL
+        OR :v_forward_window_days <= 0
+        OR MOD(:v_forward_window_days, v_bucket_size_days) != 0) THEN
+        RAISE partial_bucket_window;
+    END IF;
+
+    res := (
         WITH
         -- ====================================================================
         -- 1) Parse the input campaign-ID list (CSV of nexus_coupons UUIDs).
@@ -329,8 +383,10 @@ DECLARE
         ),
 
         -- ====================================================================
-        -- 8) Bucket assignment: ceil(days_since / bucket_size). Day 0 falls
-        --    into bucket 1 (cohort-day same-day separate brand orders count).
+        -- 8) Bucket assignment: ceil(days_since / bucket_size_days). Day 0
+        --    falls into bucket 1 (cohort-day same-day separate brand orders
+        --    count). Buckets are integer 1..N where N = forward_window /
+        --    bucket_size_days (validated above to be exact).
         -- ====================================================================
         forward_purchases_bucketed AS (
             SELECT
@@ -348,16 +404,14 @@ DECLARE
         ),
 
         -- ====================================================================
-        -- 9) Bucket grid (1..N) and per-segment cohort sizes.
-        --    Bucket end is reported as weeks_since_conversion (FLOAT) so
-        --    sub-week buckets (e.g. 7d) and multi-week buckets (e.g. 14d, 30d)
-        --    all render cleanly on the chart x-axis.
+        -- 9) Bucket grid (1..N). Because bucket_size_days = unit_size_days
+        --    (7 for WEEK, 30 for MONTH), bucket_end IS the bucket count in
+        --    the chosen unit (1.0, 2.0, ..., N.0) -- no fractional units.
         -- ====================================================================
         bucket_grid AS (
             SELECT
-                (idx + 1)                                                       AS bucket_id,
-                ((idx + 1) * :v_bucket_size_days)::INTEGER                      AS days_through_bucket,
-                ((idx + 1) * :v_bucket_size_days / 7.0)::FLOAT                  AS weeks_since_conversion
+                (idx + 1)::INTEGER AS bucket_id,
+                (idx + 1)::FLOAT   AS bucket_end
             FROM (
                 SELECT SEQ4() AS idx
                 FROM TABLE(GENERATOR(ROWCOUNT => 10000))
@@ -375,7 +429,7 @@ DECLARE
         ),
 
         segment_bucket_grid AS (
-            SELECT s.segment, bg.bucket_id, bg.weeks_since_conversion
+            SELECT s.segment, bg.bucket_id, bg.bucket_end
             FROM segments s
             CROSS JOIN bucket_grid bg
         ),
@@ -394,14 +448,14 @@ DECLARE
         cumulative_per_bucket AS (
             SELECT
                 g.segment,
-                g.weeks_since_conversion,
+                g.bucket_end,
                 COUNT(DISTINCT p.user_id)                  AS n_repeaters_through_bucket,
                 COALESCE(SUM(p.order_brand_sales_usd), 0)  AS sales_through_bucket_usd
             FROM segment_bucket_grid g
             LEFT JOIN forward_purchases_bucketed p
                 ON  p.segment   = g.segment
                 AND p.bucket_id <= g.bucket_id
-            GROUP BY g.segment, g.weeks_since_conversion
+            GROUP BY g.segment, g.bucket_end
         )
 
         -- ====================================================================
@@ -409,7 +463,8 @@ DECLARE
         -- ====================================================================
         SELECT
             cpb.segment                                                         AS segment,
-            cpb.weeks_since_conversion::FLOAT                                   AS weeks_since_conversion,
+            :v_bucket_unit_norm                                                 AS bucket_unit,
+            cpb.bucket_end::FLOAT                                               AS bucket_end,
             COALESCE(cs.n, 0)                                                   AS cohort_size,
             cpb.n_repeaters_through_bucket                                      AS n_repeaters_through_bucket,
             DIV0(cpb.n_repeaters_through_bucket, cs.n)::FLOAT                   AS brand_repeat_rate_pct,
@@ -423,9 +478,8 @@ DECLARE
                 WHEN 'Prev. Competitor Only' THEN 2
                 WHEN 'Existing Users'        THEN 3
             END,
-            cpb.weeks_since_conversion
+            cpb.bucket_end
     );
-BEGIN
     RETURN TABLE(res);
 END;
 $$;
